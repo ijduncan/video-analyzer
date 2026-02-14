@@ -1,0 +1,13 @@
+services:
+  app:
+    build: .
+    ports:
+      - "5173:8000"
+    environment:
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - ALLOWED_ORIGINS=["http://localhost:5173"]
+    volumes:
+      - uploads:/app/backend/uploads
+
+volumes:
+  uploads:
