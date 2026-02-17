@@ -4,10 +4,10 @@ import logging
 from typing import AsyncGenerator
 
 from app.config import settings
-from app.models.analysis import FlashAnalysis
+from app.models.analysis import FlashAnalysis, Scene
 from app.services.cost_estimator import estimate_cost
 from app.services.custom_pass import run_custom_pass
-from app.services.flash_pass import run_flash_pass
+from app.services.flash_pass import run_scene_detection, run_shot_detection
 from app.services.job_store import Job, update_job
 from app.services.pro_pass import run_pro_scene
 from app.services.shot_matching import run_shot_matching
@@ -28,11 +28,73 @@ async def run_analysis(
     summary_usage = {}
 
     try:
-        # --- Pass 1: Scene Detection (Flash) ---
+        # --- Pass 1a: Scene Boundary Detection (Flash, full video) ---
         update_job(job.job_id, status="analyzing", current_pass=1)
-        yield {"event": "pass_start", "data": json.dumps({"pass": 1, "name": "Scene Detection (Flash)"})}
+        yield {"event": "pass_start", "data": json.dumps({"pass": 1, "name": "Scene Detection"})}
 
-        flash_result, flash_usage = await run_flash_pass(job.file_uri, job.mime_type, fps, api_key=api_key)
+        scenes_result, s1_usage = await run_scene_detection(job.file_uri, job.mime_type, api_key=api_key)
+        flash_usage = s1_usage
+
+        # Emit intermediate event so UI knows how many scenes were found
+        yield {
+            "event": "scenes_detected",
+            "data": json.dumps({
+                "total_scenes": scenes_result.total_scenes,
+                "total_duration": scenes_result.total_duration,
+            }),
+        }
+
+        # --- Pass 1b: Shot Detection per scene (Flash, high fps, clipped) ---
+        yield {
+            "event": "pass_start",
+            "data": json.dumps({
+                "pass": 1,
+                "name": f"Shot Detection ({scenes_result.total_scenes} scene{'s' if scenes_result.total_scenes != 1 else ''})",
+            }),
+        }
+
+        assembled_scenes: list[Scene] = []
+        shot_counter = 1
+        total_scenes_for_shots = len(scenes_result.scenes)
+
+        for outline in scenes_result.scenes:
+            yield {
+                "event": "shot_detection_progress",
+                "data": json.dumps({
+                    "scene": outline.scene_number,
+                    "total": total_scenes_for_shots,
+                    "scene_title": outline.scene_title,
+                }),
+            }
+
+            try:
+                shots, s2_usage = await run_shot_detection(
+                    job.file_uri, job.mime_type, outline, shot_counter, fps, api_key=api_key
+                )
+                flash_usage = {
+                    "input_tokens": flash_usage.get("input_tokens", 0) + s2_usage.get("input_tokens", 0),
+                    "output_tokens": flash_usage.get("output_tokens", 0) + s2_usage.get("output_tokens", 0),
+                }
+            except Exception as e:
+                logger.error(f"Shot detection failed for scene {outline.scene_number}: {e}")
+                shots = []
+
+            assembled_scenes.append(Scene(
+                scene_number=outline.scene_number,
+                scene_title=outline.scene_title,
+                scene_description=outline.scene_description,
+                start_time=outline.start_time,
+                end_time=outline.end_time,
+                shots=shots,
+            ))
+            shot_counter += len(shots)
+
+        flash_result = FlashAnalysis(
+            total_duration=scenes_result.total_duration,
+            total_scenes=len(assembled_scenes),
+            total_shots=shot_counter - 1,
+            scenes=assembled_scenes,
+        )
         flash_dict = flash_result.model_dump()
 
         update_job(

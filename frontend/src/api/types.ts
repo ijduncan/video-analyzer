@@ -124,6 +124,8 @@ export interface YoutubeUploadResponse extends UploadResponse {
 export type AnalysisEvent =
   | { type: 'pass_start'; data: { pass: number; name: string } }
   | { type: 'pass_complete'; data: { pass: number; result?: unknown } }
+  | { type: 'scenes_detected'; data: { total_scenes: number; total_duration: string } }
+  | { type: 'shot_detection_progress'; data: { scene: number; total: number; scene_title: string } }
   | { type: 'scene_start'; data: { scene: number; total: number } }
   | { type: 'scene_complete'; data: { scene: number; result: SceneDeepAnalysis } }
   | { type: 'custom_complete'; data: { result: Record<string, unknown> } }

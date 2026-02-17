@@ -1,4 +1,4 @@
-export const FPS_OPTIONS = [0.5, 1, 2, 5] as const
+export const FPS_OPTIONS = [1, 4, 12, 24] as const
 
 export const PLAYBACK_RATES = [0.25, 0.5, 1, 1.5, 2] as const
 

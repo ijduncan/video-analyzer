@@ -22,6 +22,14 @@ export function useAnalysis() {
         }
         break
 
+      case 'scenes_detected':
+        // Stage 1 complete — intermediate info, no store update needed (pass_complete fires later)
+        break
+
+      case 'shot_detection_progress':
+        store.setShotDetectionProgress(event.data.scene, event.data.total, event.data.scene_title)
+        break
+
       case 'scene_start':
         store.setCurrentScene(event.data.scene, event.data.total)
         break

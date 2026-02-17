@@ -19,6 +19,8 @@ export function connectAnalysisStream(
   const eventTypes = [
     'pass_start',
     'pass_complete',
+    'scenes_detected',
+    'shot_detection_progress',
     'scene_start',
     'scene_complete',
     'custom_complete',

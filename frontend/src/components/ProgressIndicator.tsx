@@ -1,10 +1,15 @@
 import { useAnalysisStore } from '../stores/analysisStore'
 
 export function ProgressIndicator() {
-  const { currentPass, currentPassName, currentScene, totalScenes } = useAnalysisStore()
+  const {
+    currentPass, currentPassName, currentScene, totalScenes,
+    shotDetectionScene, shotDetectionTotal, shotDetectionSceneTitle,
+  } = useAnalysisStore()
 
   const passLabels = ['', 'Scene Detection', 'Deep Analysis', 'Summary']
   const label = currentPassName || passLabels[currentPass] || ''
+
+  const inShotDetection = currentPass === 1 && shotDetectionTotal > 0
 
   return (
     <div className="px-4 py-3 bg-zinc-900/80 border-b border-zinc-800 shrink-0">
@@ -26,6 +31,12 @@ export function ProgressIndicator() {
         <span className="text-xs text-zinc-300">
           Pass {currentPass}/3: {label}
         </span>
+        {inShotDetection && (
+          <span className="text-[10px] text-zinc-500 truncate max-w-[200px]" title={shotDetectionSceneTitle}>
+            Scene {shotDetectionScene}/{shotDetectionTotal}
+            {shotDetectionSceneTitle ? ` — ${shotDetectionSceneTitle}` : ''}
+          </span>
+        )}
         {currentPass === 2 && totalScenes > 0 && (
           <span className="text-[10px] text-zinc-500">
             Scene {currentScene}/{totalScenes}
@@ -38,7 +49,7 @@ export function ProgressIndicator() {
         <div
           className="h-full bg-blue-500 rounded-full transition-all duration-500"
           style={{
-            width: `${getProgress(currentPass, currentScene, totalScenes)}%`,
+            width: `${getProgress(currentPass, currentScene, totalScenes, shotDetectionScene, shotDetectionTotal)}%`,
           }}
         />
       </div>
@@ -46,8 +57,17 @@ export function ProgressIndicator() {
   )
 }
 
-function getProgress(pass: number, scene: number, totalScenes: number): number {
-  if (pass === 1) return 15
+function getProgress(
+  pass: number, scene: number, totalScenes: number,
+  shotScene: number, shotTotal: number,
+): number {
+  if (pass === 1) {
+    if (shotTotal > 0) {
+      // In shot detection sub-pass: 15–30%
+      return 15 + (shotScene / shotTotal) * 15
+    }
+    return 10
+  }
   if (pass === 2) {
     const sceneProgress = totalScenes > 0 ? (scene / totalScenes) * 60 : 0
     return 30 + sceneProgress

@@ -21,6 +21,10 @@ interface AnalysisState {
   currentPassName: string
   currentScene: number
   totalScenes: number
+  // Shot detection sub-progress (Pass 1b)
+  shotDetectionScene: number
+  shotDetectionTotal: number
+  shotDetectionSceneTitle: string
 
   // Results
   flashResult: FlashAnalysis | null
@@ -50,6 +54,7 @@ interface AnalysisState {
   setAnalysisStatus: (s: AnalysisStatus) => void
   setCurrentPass: (pass: number, name: string) => void
   setCurrentScene: (scene: number, total: number) => void
+  setShotDetectionProgress: (scene: number, total: number, title: string) => void
   setFlashResult: (result: FlashAnalysis) => void
   appendDeepResult: (result: SceneDeepAnalysis) => void
   setSummary: (summary: VideoSummary) => void
@@ -80,6 +85,9 @@ const initialState = {
   currentPassName: '',
   currentScene: 0,
   totalScenes: 0,
+  shotDetectionScene: 0,
+  shotDetectionTotal: 0,
+  shotDetectionSceneTitle: '',
   flashResult: null,
   deepResults: [],
   summary: null,
@@ -92,7 +100,7 @@ const initialState = {
   selectedScene: null,
   activeTab: 'timeline' as ActiveTab,
   searchQuery: '',
-  fps: 1,
+  fps: 4,
   mode: 'flash_pro' as AnalysisMode,
   error: null,
 }
@@ -136,6 +144,8 @@ export const useAnalysisStore = create<AnalysisState>((set) => ({
   setAnalysisStatus: (analysisStatus) => set({ analysisStatus }),
   setCurrentPass: (currentPass, currentPassName) => set({ currentPass, currentPassName }),
   setCurrentScene: (currentScene, totalScenes) => set({ currentScene, totalScenes }),
+  setShotDetectionProgress: (shotDetectionScene, shotDetectionTotal, shotDetectionSceneTitle) =>
+    set({ shotDetectionScene, shotDetectionTotal, shotDetectionSceneTitle }),
   setFlashResult: (flashResult) => set({ flashResult }),
   appendDeepResult: (result) => set((state) => ({
     deepResults: [...state.deepResults, result],

@@ -3,6 +3,29 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 
+# --- Pass 1: Flash Scene Detection (intermediate models) ---
+
+class SceneOutline(BaseModel):
+    """Stage 1 output: scene boundary only, no shots yet."""
+    scene_number: int
+    scene_title: str
+    scene_description: str
+    start_time: str  # MM:SS
+    end_time: str    # MM:SS
+
+
+class SceneDetectionResult(BaseModel):
+    """Full Stage 1 output."""
+    total_duration: str
+    total_scenes: int
+    scenes: list[SceneOutline]
+
+
+class ShotDetectionResult(BaseModel):
+    """Stage 2 output for a single scene."""
+    shots: list[Shot]
+
+
 # --- Pass 1: Flash Scene Detection ---
 
 class Shot(BaseModel):
