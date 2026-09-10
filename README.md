@@ -1,6 +1,6 @@
 # Video Analyzer
 
-Turn footage into a searchable shot library with Gemini analysis, editable metadata, and exports for the edit. Built for agency teams finding and reusing footage, and filmmakers exploring their material.
+Turn footage into a searchable shot library with Gemini analysis, visual match-cut discovery, editable metadata, and exports for the edit. Built for agency teams finding and reusing footage, and filmmakers exploring their material.
 
 ![Video Analyzer showing a large footage preview beside shot thumbnails, descriptions, camera movements, and tags.](docs/screenshots/shot-workspace.png)
 
@@ -9,7 +9,8 @@ Turn footage into a searchable shot library with Gemini analysis, editable metad
 1. **Import a video as its own project.** Preview and organize local footage without an AI key. Source facts, analysis, tags, notes, collections, and review decisions persist in SQLite across restarts.
 2. **Choose Shots and tags or Full analysis.** Gemini describes shots, subjects, actions, colors, camera movement, and audio. Full analysis adds deeper cinematography, editing, narrative notes, and a video summary. Known-duration videos are processed in 30-second sections; shots and midpoint thumbnails appear as sections finish after provider upload processing.
 3. **Find and review shots.** Search inside one project, play matching shots, edit human tags and notes, and record review and usage-rights status. Open an analysis section to jump back to its shots.
-4. **Export the whole video or selected shots.** Download metadata and editorial interchange files, or copy individual in/out times and shot ranges.
+4. **Explore visual match cuts.** Select a detected shape or trace your own outline, then search for similar silhouettes, framing, and colors across selected projects.
+5. **Export the whole video or selected shots.** Download metadata and editorial interchange files, or copy individual in/out times and shot ranges.
 
 Analysis runs in the background while the server is running, including when the browser tab closes. Partial results persist, duplicate runs are rejected, and interrupted runs are identified on restart. Retry is explicit; restarting the server does not automatically resume model calls.
 
@@ -23,9 +24,21 @@ Text search uses keywords over saved metadata and highlights matching words in s
 
 ## Explore visual match cuts
 
-Open **Match cuts** to connect shots through shape, composition, and color. **Identify shapes**, then click a silhouette, draw around a form, or select a named object from the Shape list. The same source silhouette is compared across candidates, even when they depict different objects. Matching position and size is enabled by default; turn it off to explore similar forms elsewhere in the frame. Composition identifies the main subject, facing direction, framing, and open space. Adjust both cut points, preview **A → B**, and export the pair's trim ranges and discovered outlines as JSON.
+Open **Match cuts** to connect shots through shape, composition, and color. Use the searchable project picker to choose which videos to search by title or filename, and adjust the weight of each matching dimension.
+
+![Shape detection on the Match cuts page, with outlines around a character's head and armor, shape and composition controls, and an outgoing frame preview.](docs/screenshots/shape-detection.png)
+
+*Detected shapes and composition in an outgoing frame from Half-Life: Live action film.*
+
+- **Detect a shape:** click **Identify shapes**, then select a named object or use **Select detected shape** to click a silhouette or drag a box around it. The box selects an existing detected form.
+- **Draw your own silhouette:** choose **Draw outline**, drag around the entire visible subject, and release to close the shape. The matcher uses your traced outline directly, so a selection of a whole person does not snap to a smaller detail such as their armor.
+- **Match the framing:** keep **Match position and size too** enabled to favor silhouettes in a similar place and at a similar scale. Turn it off to explore similar forms elsewhere in the frame. Composition compares the main subject, facing direction, framing, and open space; color compares the whole frame.
+
+Adjust both cut points, preview **A → B**, and export the pair's trim ranges and discovered outlines as JSON. Each video's selected frames, search settings, drawn outline, candidates, and incoming cut are remembered across navigation and browser refreshes. Returning reconnects to cached results and live progress without starting additional Gemini analysis.
 
 Local frame indexing publishes saved frames progressively and supports pause/resume. Shape and Composition use billable Gemini frame analysis with cached results; color matching stays local. Candidates update as analysis arrives. Weak silhouettes and incompatible framing are filtered out. Outlines are approximate, so inspect the actual frames. The visual index samples five frames per shot. Motion scoring, learned visual embeddings, and frame-accurate NLE export of adjusted match pairs are future work. See [the workflow, implementation, and limits](docs/VISUAL_MATCH_CUTS.md).
+
+A drawn outline is compared against the candidate silhouettes already identified by Gemini. It does not add object tracking or guarantee that every person or object has been detected.
 
 ## Export useful information
 
@@ -102,17 +115,19 @@ Open [the Docker workspace](http://localhost:5173). Compose binds to loopback an
 
 | Item | Default location / behavior |
 |---|---|
-| Original videos and thumbnails | `backend/uploads/` (ignored by Git) |
+| App-created video copies, thumbnails, and visual caches | `backend/uploads/` (ignored by Git); original source files stay where you selected them |
 | Library and analysis records | `backend/data/library.sqlite3` (ignored by Git) |
 | Provider key | `.env.local` / `.env` or optional browser override; never in SQLite |
 | Upload limit | 2,000 MiB per file; configurable via `MAX_FILE_SIZE_MB` |
 | Analysis concurrency | Two jobs; configurable via `MAX_CONCURRENT_ANALYSES` |
-| Google file retention | Expiring provider references are refreshed from local originals before analysis |
+| Google file retention | Expiring provider references are refreshed from app-held video copies before analysis |
 | Results | Durable after each processing section; partial shots are searchable and reviewable during analysis. Failed sections retain successful results and report incomplete coverage. |
 
-`DATABASE_PATH` and `UPLOAD_DIR` can override storage locations. Back up both the database and originals; exports do not package video files. YouTube references support analysis but do not provide local technical metadata or a native preview; use a local original for reliable editorial handoffs.
+`DATABASE_PATH` and `UPLOAD_DIR` can override storage locations. Back up the database and app-held media to preserve the workspace, and keep your original source files separately; exports do not package video files. YouTube references support analysis but do not provide local technical metadata or a native preview; import a local video for reliable editorial handoffs.
 
 Imports have independent project IDs and results in the same SQLite database, rather than separate database files. The optional **Project label** metadata field can group related imports for an agency; it does not merge their shot browsers.
+
+Remove one project with its trash button, or use the library checkboxes and **Delete selected** for multiple projects. Confirmation lists the projects before removal. Deletion removes their records and only copies or cache files created by the app; it never deletes your original source files. If Windows blocks an app-owned file, the project still leaves the library and cleanup is queued for automatic retry while the server is running, including after a restart.
 
 ## Accuracy and export boundaries
 
