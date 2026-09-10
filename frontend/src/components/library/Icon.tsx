@@ -16,6 +16,7 @@ const paths = {
   chevron: <path d="m9 5 7 7-7 7" />,
   down: <path d="m5 9 7 7 7-7" />,
   close: <path d="m6 6 12 12M6 18 18 6" />,
+  trash: <><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7" /></>,
   play: <path d="m8 4 13 8-13 8Z" />,
   settings: <><path d="M4 7h16M4 17h16" /><circle cx="9" cy="7" r="3" /><circle cx="15" cy="17" r="3" /></>,
   download: <><path d="M12 3v13m-5-5 5 5 5-5M4 18v3h16v-3" /></>,

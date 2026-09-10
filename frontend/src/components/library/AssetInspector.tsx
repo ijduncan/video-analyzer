@@ -10,6 +10,7 @@ import { ExportPanel } from './ExportPanel'
 import { SearchHighlight } from './SearchHighlight'
 import './VideoWorkspace.css'
 import { MatchCutPanel } from './MatchCutPanel'
+import { forgetMatchCutSession } from './matchCutSession'
 
 interface Props {
   asset: AssetDetail
@@ -114,6 +115,7 @@ export function AssetInspector({ asset, initialSeconds, initialShot, capabilitie
     if (player) { player.pause(); player.removeAttribute('src'); player.load() }
     try {
       const result = await deleteAsset(asset.job_id)
+      forgetMatchCutSession(asset.job_id)
       onClose(); onRefresh(); onRemoved?.(result.note)
     } catch (err) {
       setError(errorMessage(err)); body.current?.scrollTo({ top: 0 })

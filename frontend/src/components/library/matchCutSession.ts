@@ -48,3 +48,9 @@ export function saveMatchCutSession(id: string, session: MatchCutSession) {
   try { localStorage.setItem(PREFIX + id, JSON.stringify(session)) }
   catch { /* Navigation still restores from memory when browser storage is unavailable. */ }
 }
+
+export function forgetMatchCutSession(id: string) {
+  memory.delete(id)
+  try { localStorage.removeItem(PREFIX + id) }
+  catch { /* Storage may be disabled. The in-memory session is still removed. */ }
+}

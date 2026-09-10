@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { readMatchCutSession, saveMatchCutSession } from '../src/components/library/matchCutSession.ts'
+import { readMatchCutSession, saveMatchCutSession, forgetMatchCutSession } from '../src/components/library/matchCutSession.ts'
 
 const records = new Map()
 globalThis.localStorage = {
   getItem: key => records.get(key) ?? null,
   setItem: (key, value) => records.set(key, value),
+  removeItem: key => records.delete(key),
 }
 const session = {
   run: 'analysis-1', shotNumber: 61, seconds: 169.7,
@@ -31,6 +32,13 @@ test('reads persisted sessions without an in-memory copy', () => {
 test('invalidates a previous analysis run', () => {
   saveMatchCutSession('reanalyzed', session)
   assert.equal(readMatchCutSession('reanalyzed', 'analysis-2'), null)
+})
+
+test('removes the session when its project is deleted', () => {
+  saveMatchCutSession('deleted-project', session)
+  forgetMatchCutSession('deleted-project')
+  assert.equal(readMatchCutSession('deleted-project', 'analysis-1'), null)
+  assert.equal(records.has('video-analyzer:match-cuts:v1:deleted-project'), false)
 })
 
 test('ignores broken JSON and invalid settings', () => {

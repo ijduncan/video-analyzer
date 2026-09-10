@@ -7,6 +7,8 @@ import { AssetInspector } from './library/AssetInspector'
 import { Icon } from './library/Icon'
 import { duration, errorMessage, reviewLabel } from './library/format'
 import { isActiveAnalysis } from './library/analysisProgress'
+import { DeleteProjectsDialog } from './library/DeleteProjectsDialog'
+import type { DeletionProject } from './library/DeleteProjectsDialog'
 import './LibraryWorkspace.css'
 
 export function LibraryWorkspace({ onOpenAnalyzer }: { onOpenAnalyzer: () => void }) {
@@ -32,6 +34,8 @@ export function LibraryWorkspace({ onOpenAnalyzer }: { onOpenAnalyzer: () => voi
   const [error, setError] = useState('')
   const [refresh, setRefresh] = useState(0)
   const [selection, setSelection] = useState<{ id: string; seconds?: number; shot?: number } | null>(null)
+  const [checkedProjects, setCheckedProjects] = useState<DeletionProject[]>([])
+  const [deletingProjects, setDeletingProjects] = useState<DeletionProject[] | null>(null)
   const [detail, setDetail] = useState<AssetDetail | null>(null)
   const [detailError, setDetailError] = useState('')
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null)
@@ -164,8 +168,23 @@ export function LibraryWorkspace({ onOpenAnalyzer }: { onOpenAnalyzer: () => voi
     } finally { setUpload(null); uploadLock.current = false; if (fileInput.current) fileInput.current.value = '' }
   }
 
+  function toggleProject(asset: LibraryAsset) {
+    setCheckedProjects(previous => previous.some(item => item.id === asset.job_id)
+      ? previous.filter(item => item.id !== asset.job_id)
+      : [...previous, { id: asset.job_id, title: asset.metadata.title || asset.filename }])
+  }
+  function projectsDeleted(ids: string[], notes: string[]) {
+    if (!ids.length) return
+    setCheckedProjects(previous => previous.filter(item => !ids.includes(item.id)))
+    setLibrary(previous => previous ? { ...previous, assets: previous.assets.filter(item => !ids.includes(item.job_id)) } : previous)
+    setUploadNotice(`${ids.length} ${ids.length === 1 ? 'project' : 'projects'} deleted.${notes.length ? ` ${notes.join(' ')}` : ''}`)
+    refreshLibrary()
+  }
+
   function clearFilters() { setQuery(''); setProject(''); setReview(''); setTag(''); setRights(''); setCollection('') }
   const assets = library?.assets || []
+  const selectableProjects = assets.filter(asset => !isActiveAnalysis(asset.status) && asset.status !== 'deleting')
+  const allPageSelected = selectableProjects.length > 0 && selectableProjects.every(asset => checkedProjects.some(item => item.id === asset.job_id))
   const shots = shotResultProject === shotProjectId ? shotResults : []
   const hasFilters = !!(query || project || review || tag || rights || collection)
   const count = searchMode === 'shots' ? (shotResultProject === shotProjectId ? shotTotal : 0) : library?.total || 0
@@ -187,6 +206,10 @@ export function LibraryWorkspace({ onOpenAnalyzer }: { onOpenAnalyzer: () => voi
             <button className="lw-icon-button" aria-label="Settings" title="Settings" onClick={() => setSettings(true)}><Icon name="settings" size={18} /></button>
           </div>
         </header>
+        {searchMode === 'assets' && (assets.length > 0 || checkedProjects.length > 0) && <div className="lw-project-selection" role="group" aria-label="Project selection">
+          <label><input type="checkbox" aria-label="Select projects on this page" checked={allPageSelected} disabled={loading || !selectableProjects.length} onChange={event => setCheckedProjects(previous => event.target.checked ? [...previous, ...selectableProjects.filter(asset => !previous.some(item => item.id === asset.job_id)).map(asset => ({ id: asset.job_id, title: asset.metadata.title || asset.filename }))] : previous.filter(item => !selectableProjects.some(asset => asset.job_id === item.id)))} />Select page</label>
+          {!!checkedProjects.length && <><span>{checkedProjects.length} selected</span><button className="lw-text-button" onClick={() => setCheckedProjects([])}>Clear selection</button><button className="lw-button lw-button-danger" onClick={() => setDeletingProjects(checkedProjects)}><Icon name="trash" size={15} />Delete selected</button></>}
+        </div>}
         {searchMode === 'shots' && <div className="lw-project-scope">
           <label><span>Project</span><select aria-label="Shot project" required value={shotProjectId} disabled={!projects?.length} onChange={event => setShotProjectId(event.target.value)}>
             {!projects?.length && <option value="">{projectLoading ? 'Loading projects…' : 'No projects yet'}</option>}
@@ -211,23 +234,28 @@ export function LibraryWorkspace({ onOpenAnalyzer }: { onOpenAnalyzer: () => voi
         {uploadNotice && <div className="lw-notice" role="status"><Icon name="check" size={17} /><span>{uploadNotice}</span><button className="lw-icon-button" aria-label="Dismiss notification" onClick={() => setUploadNotice('')}><Icon name="close" size={15} /></button></div>}
         {uploadError && <div className="lw-inline-error" role="alert">{uploadError}<button className="lw-text-button" onClick={() => setUploadError('')}>Dismiss</button></div>}
         {(loading || projectLoading || shotScopeLoading) && library && <span className="lw-loading-status" role="status">Loading…</span>}
-        {displayError ? <div className="lw-empty-state lw-error-state"><h2>Couldn’t load {projectError && !projects ? 'projects' : 'footage'}</h2><p>{displayError}</p><button className="lw-button" onClick={refreshLibrary}>Try again</button></div> : (loading && !library) || projectLoading || shotScopeLoading ? <div className="lw-asset-grid" aria-label="Loading library" aria-busy="true">{Array.from({ length: 6 }, (_, index) => <div className="lw-skeleton" key={index}><div /><span /><span /></div>)}</div> : !count ? <EmptyState hasLibrary={!!library?.stats.assets} filtered={hasFilters} shots={searchMode === 'shots'} onImport={() => fileInput.current?.click()} importing={!!upload} onClear={clearFilters} onVideos={() => setSearchMode('assets')} /> : <div className={`${layout === 'grid' ? 'lw-asset-grid' : 'lw-asset-list'} ${loading ? 'is-updating' : ''}`}>{searchMode === 'assets' ? assets.map(asset => <AssetCard key={asset.job_id} asset={asset} selected={selection?.id === asset.job_id} onClick={() => openVideo({ id: asset.job_id })} />) : shots.map(shot => <ShotCard key={`${shot.job_id}-${shot.shot_number}`} shot={shot} selected={selection?.id === shot.job_id && selection?.shot === shot.shot_number} onClick={() => openVideo({ id: shot.job_id, seconds: shot.start_seconds, shot: shot.shot_number })} />)}</div>}
+        {displayError ? <div className="lw-empty-state lw-error-state"><h2>Couldn’t load {projectError && !projects ? 'projects' : 'footage'}</h2><p>{displayError}</p><button className="lw-button" onClick={refreshLibrary}>Try again</button></div> : (loading && !library) || projectLoading || shotScopeLoading ? <div className="lw-asset-grid" aria-label="Loading library" aria-busy="true">{Array.from({ length: 6 }, (_, index) => <div className="lw-skeleton" key={index}><div /><span /><span /></div>)}</div> : !count ? <EmptyState hasLibrary={!!library?.stats.assets} filtered={hasFilters} shots={searchMode === 'shots'} onImport={() => fileInput.current?.click()} importing={!!upload} onClear={clearFilters} onVideos={() => setSearchMode('assets')} /> : <div className={`${layout === 'grid' ? 'lw-asset-grid' : 'lw-asset-list'} ${loading ? 'is-updating' : ''}`}>{searchMode === 'assets' ? assets.map(asset => <AssetCard key={asset.job_id} asset={asset} selected={selection?.id === asset.job_id} onClick={() => openVideo({ id: asset.job_id })} checked={checkedProjects.some(item => item.id === asset.job_id)} onToggle={() => toggleProject(asset)} onDelete={() => setDeletingProjects([{ id: asset.job_id, title: asset.metadata.title || asset.filename }])} />) : shots.map(shot => <ShotCard key={`${shot.job_id}-${shot.shot_number}`} shot={shot} selected={selection?.id === shot.job_id && selection?.shot === shot.shot_number} onClick={() => openVideo({ id: shot.job_id, seconds: shot.start_seconds, shot: shot.shot_number })} />)}</div>}
         {!displayError && count > pageSize && <div className="lw-pagination"><span>{(page * pageSize + 1).toLocaleString()}–{Math.min((page + 1) * pageSize, count).toLocaleString()} of {count.toLocaleString()}</span><div><button className="lw-button" disabled={page === 0 || loading} onClick={() => setPagination({ context: pageContext, page: page - 1 })}>Previous</button><button className="lw-button" disabled={(page + 1) * pageSize >= count || loading} onClick={() => setPagination({ context: pageContext, page: page + 1 })}>Next</button></div></div>}
       </div>
       {dragging && <div className="lw-drop-overlay"><Icon name="upload" size={32} /><h2>Drop videos here</h2></div>}
     </main>
     {selection && (detail?.job_id === selection.id ? <AssetInspector key={`${selection.id}-${selection.shot || 'asset'}`} asset={detail} initialSeconds={selection.seconds} initialShot={selection.shot} capabilities={capabilities} onClose={() => setSelection(current => current?.id === selection.id ? null : current)} onRefresh={refreshLibrary} onConfigure={() => setSettings(true)} onRemoved={note => setUploadNotice(`Video removed.${note ? ` ${note}` : ''}`)} /> : <main className="lw-inspector lw-video-workspace lw-video-workspace-loading" aria-label="Video workspace"><button className="lw-button lw-back-to-library" data-video-back onClick={() => setSelection(null)}><Icon name="back" />Back to library</button>{detailError ? <><p role="alert">{detailError}</p><button className="lw-button" onClick={refreshLibrary}>Try again</button></> : <p role="status">Opening video…</p>}</main>)}
+    {deletingProjects && <DeleteProjectsDialog projects={deletingProjects} onClose={() => setDeletingProjects(null)} onDeleted={projectsDeleted} />}
     {settings && <SettingsDialog capabilities={capabilities} onClose={() => setSettings(false)} onOpenAnalyzer={onOpenAnalyzer} />}
   </div>
 }
 
-function AssetCard({ asset, selected, onClick }: { asset: LibraryAsset; selected: boolean; onClick: () => void }) {
+function AssetCard({ asset, selected, onClick, checked, onToggle, onDelete }: { asset: LibraryAsset; selected: boolean; onClick: () => void; checked: boolean; onToggle: () => void; onDelete: () => void }) {
   const isAnalyzing = ['queued', 'analyzing', 'processing'].includes(asset.status)
-  return <button className={`lw-asset-card ${selected ? 'is-selected' : ''}`} onClick={onClick} aria-pressed={selected}>
+  const busy = isActiveAnalysis(asset.status) || asset.status === 'deleting'
+  const title = asset.metadata.title || asset.filename
+  return <div className={`lw-project-card ${checked ? 'is-checked' : ''}`}>
+    <div className="lw-project-card-actions"><input type="checkbox" aria-label={`Select project ${title}`} checked={checked} disabled={busy} title={busy ? 'Finish or cancel analysis before deleting this project.' : 'Select project'} onChange={onToggle} /><button className="lw-icon-button" aria-label={`Delete project ${title}`} title={busy ? 'Finish or cancel analysis before deleting this project.' : 'Delete project'} disabled={busy} onClick={onDelete}><Icon name="trash" size={16} /></button></div>
+    <button className={`lw-asset-card ${selected ? 'is-selected' : ''}`} onClick={onClick} aria-pressed={selected}>
     <div className="lw-card-image">{asset.thumbnail_url ? <img src={asset.thumbnail_url} alt="" loading="lazy" /> : <div className="lw-card-placeholder"><Icon name="film" size={32} /><span>{asset.mime_type?.split('/')[1]?.toUpperCase() || 'VIDEO'}</span></div>}<span className="lw-card-play"><Icon name="play" size={17} /></span><span className="lw-card-duration">{duration(asset.technical.duration_seconds)}</span>{isAnalyzing ? <span className="lw-card-status analyzing"><Icon name="spark" size={11} />{asset.status === 'queued' ? 'Queued' : 'Analyzing'}</span> : asset.status === 'error' ? <span className="lw-card-status error">Analysis failed</span> : null}</div>
     <div className="lw-card-content"><div className="lw-card-title"><h3 title={asset.metadata.title || asset.filename}>{asset.metadata.title || asset.filename}</h3><span className={`lw-review-dot ${asset.metadata.review_status}`} title={reviewLabel(asset.metadata.review_status)} /></div><div className="lw-card-subtitle">{asset.metadata.project && <span>{asset.metadata.project}</span>}</div>{asset.match_context && asset.match_context !== 'Matched asset metadata' && <p className="lw-match-context">{asset.match_context}</p>}{asset.metadata.tags.length > 0 && <div className="lw-card-tags">{asset.metadata.tags.slice(0, 3).map(tag => <span key={tag}>{tag}</span>)}{asset.metadata.tags.length > 3 && <span>+{asset.metadata.tags.length - 3}</span>}</div>}</div>
     <div className="lw-list-review"><span className={`lw-review-dot ${asset.metadata.review_status}`} />{reviewLabel(asset.metadata.review_status)}</div><Icon name="chevron" className="lw-list-chevron" size={16} />
-  </button>
+  </button></div>
 }
 function ShotCard({ shot, selected, onClick }: { shot: LibraryShot; selected: boolean; onClick: () => void }) {
   return <button className={`lw-asset-card lw-shot-card ${selected ? 'is-selected' : ''}`} onClick={onClick} aria-pressed={selected}><div className="lw-card-image">{shot.thumbnail_url ? <img src={shot.thumbnail_url} alt="" loading="lazy" /> : <div className="lw-card-placeholder"><Icon name="film" size={32} /><span>SHOT {String(shot.shot_number).padStart(2, '0')}</span></div>}<span className="lw-card-play"><Icon name="play" size={17} /></span><span className="lw-card-duration">{shot.start_time} – {shot.end_time}</span><span className="lw-card-status">SHOT {String(shot.shot_number).padStart(2, '0')}</span></div><div className="lw-card-content"><div className="lw-card-title"><h3>{shot.scene_title || `Shot ${shot.shot_number}`}</h3><span className={`lw-review-dot ${shot.review_status}`} /></div><div className="lw-card-subtitle"><span title={shot.filename}>{shot.filename}</span></div><p className="lw-shot-description">{shot.visual_description}</p>{shot.match_context && shot.match_context !== shot.visual_description && <p className="lw-match-context">{shot.match_context}</p>}<div className="lw-card-tags">{[shot.shot_type, shot.mood, ...shot.tags].filter(Boolean).slice(0, 3).map((tag, index) => <span key={`${tag}-${index}`}>{tag}</span>)}</div></div><Icon name="chevron" className="lw-list-chevron" size={16} /></button>
