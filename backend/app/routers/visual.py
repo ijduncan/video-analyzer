@@ -144,7 +144,7 @@ async def find_matches(job_id: str, body: MatchRequest, api_key: str | None = De
                     composition_index.start(target, api_key)
         if body.shape and body.prepare_shape:
             for target in targets:
-                shape_index.start(target, api_key)
+                shape_index.start(target, api_key, source=source)
         result = await asyncio.to_thread(visual_index.search, source, job_id, body.shot_number, targets,
             {'shape': body.shape, 'composition': body.composition, 'color': body.color}, body.region, body.limit, profile, source_form, body.align_shape)
         result['source_shapes'] = forms

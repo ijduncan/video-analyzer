@@ -10,6 +10,38 @@ from app.services.library_service import shot_views
 from test_visual_matching import visual_asset, wait_index
 
 
+def test_priority_reaches_similar_later_shots_first_without_losing_diversity():
+    from app.services.visual_features import describe
+    from test_visual_matching import picture
+    source = describe(picture())
+    unrelated = describe(picture(circle=False, center=(60, 50)))
+    different_color = describe(picture(color=(255, 150, 0)))
+    rows = [(1, 1., unrelated), (1, 2., unrelated), (62, 171., source),
+            (62, 172., source), (65, 183., source), (90, 230., different_color)]
+    ordered = shape_index.prioritize(rows, source)
+    assert ordered[:2] == [171., 183.]
+    assert set(ordered) == {row[1] for row in rows}
+    assert len(ordered) == len(rows)
+    assert ordered.index(230.) < ordered.index(172.)  # One frame per shot before refinements.
+
+
+def test_running_shape_queue_accepts_new_priority_without_restarting(client, visual_asset):
+    from app.services.visual_features import describe
+    from test_visual_matching import picture
+    client.post(f'/api/visual/{visual_asset.job_id}/index')
+    state = wait_index(client, visual_asset.job_id)
+    task = SimpleNamespace(done=lambda: False)
+    shape_index._tasks[visual_asset.job_id] = task
+    try:
+        shape_index.start(visual_asset, source=describe(picture(color=(255, 150, 0))))
+        assert shape_index._tasks[visual_asset.job_id] is task
+        assert shape_index._priorities[visual_asset.job_id][0] > 3.5
+        assert len(shape_index._priorities[visual_asset.job_id]) == state['shape']['total']
+    finally:
+        shape_index._tasks.pop(visual_asset.job_id, None)
+        shape_index._priorities.pop(visual_asset.job_id, None)
+
+
 def circle(label='wheel', x=500, y=500, radius=150, aspect=16/9):
     return geometry.describe({'label': label, 'outline': [
         [x+radius*math.cos(i*math.pi/16)/aspect, y+radius*math.sin(i*math.pi/16)] for i in range(32)]}, aspect)
