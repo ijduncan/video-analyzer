@@ -1,0 +1,196 @@
+"""Resumable frame index, isolated from paid analysis and invalidated by source/run changes."""
+import asyncio
+import hashlib
+import json
+import math
+import sqlite3
+from pathlib import Path
+
+import cv2
+
+from app.config import settings
+from app.services.job_store import get_job
+from app.services.library_service import shot_views
+from app.services.thumbnail_service import _extract_frame
+from app.services.visual_features import describe, compare
+
+VERSION = 2
+_tasks = {}
+_errors = {}
+_gate = asyncio.Semaphore(1)
+_frame_gate = asyncio.Semaphore(2)
+
+
+def source_info(job):
+    if job.status in ('queued', 'analyzing', 'processing', 'deleting'):
+        raise ValueError('Finish or cancel analysis before indexing visual matches.')
+    if not job.local_path or not Path(job.local_path).is_file():
+        raise ValueError('Visual matching needs the locally imported video.')
+    shots = list(shot_views(job))
+    if not shots:
+        raise ValueError('Analyze this video to find shots first.')
+    stat = Path(job.local_path).stat()
+    key = hashlib.sha256(json.dumps([VERSION, str(Path(job.local_path).resolve()), stat.st_size, stat.st_mtime_ns,
+        job.analysis_config.get('started_at'), [(s['shot_number'], s['start_seconds'], s['end_seconds']) for s in shots]]).encode()).hexdigest()[:24]
+    return key, shots
+
+
+def directory(job, key):
+    # Hash opaque IDs: callers never control a filesystem path segment.
+    root = Path(settings.upload_dir) / job.job_id
+    if not root.resolve().is_relative_to(Path(settings.upload_dir).resolve()):
+        raise ValueError('Invalid asset storage path.')
+    return root / 'visual' / key
+
+
+def connection(job, key):
+    folder = directory(job, key)
+    folder.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(folder / 'index.sqlite3', timeout=10)
+    db.execute('CREATE TABLE IF NOT EXISTS frames (id TEXT PRIMARY KEY, shot INTEGER, seconds REAL, data TEXT)')
+    return db
+
+
+def samples(shots):
+    # Five evenly distributed interior samples per shot. Dense trim review is interactive.
+    for shot in shots:
+        start, end = shot['start_seconds'], shot['end_seconds']
+        if not math.isfinite(start + end) or end <= start:
+            continue
+        for seconds in sorted({round(start + (end - start) * f, 3) for f in (.1, .3, .5, .7, .9)}):
+            yield shot, seconds, f"{shot['shot_number']}_{round(seconds * 1000)}"
+
+
+def status(job):
+    key, shots = source_info(job)
+    total = sum(1 for _ in samples(shots))
+    db = connection(job, key)
+    try:
+        done, failed = db.execute("SELECT COUNT(*), COALESCE(SUM(data IS NULL),0) FROM frames").fetchone()
+    finally:
+        db.close()
+    running = job.job_id in _tasks and not _tasks[job.job_id].done()
+    return {'job_id': job.job_id, 'revision': key, 'total': total, 'indexed': done - failed, 'failed': failed,
+            'status': 'indexing' if running else 'complete' if done == total and not failed else 'partial' if done else 'not_started',
+            'error': _errors.get(job.job_id), 'sampling': '5 interior frames per shot'}
+
+
+async def frame(job, key, seconds):
+    folder = directory(job, key)
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f'frame_{round(seconds * 1000)}.jpg'
+    async with _frame_gate:
+        if not path.is_file() and not await _extract_frame(job.local_path, seconds, str(path)):
+            raise ValueError('Could not decode this frame. Try another point in the shot.')
+    return path
+
+
+def features(path):
+    image = cv2.imread(str(path))
+    if image is None:
+        raise ValueError('Could not read this frame.')
+    return describe(image)
+
+
+async def build(job, key, shots):
+    try:
+        async with _gate:
+            db = connection(job, key)
+            try:
+                done = {row[0] for row in db.execute('SELECT id FROM frames WHERE data IS NOT NULL')}
+            finally:
+                db.close()
+            for shot, seconds, ident in samples(shots):
+                if ident in done:
+                    continue
+                current = get_job(job.job_id)
+                if current is None or source_info(current)[0] != key:
+                    raise ValueError('The source or analysis changed. Restart the visual index.')
+                try:
+                    path = await frame(job, key, seconds)
+                    data = await asyncio.to_thread(features, path)
+                except ValueError:
+                    data = None
+                # Do not republish into an asset that has been removed or replaced during decoding.
+                current = get_job(job.job_id)
+                if current is None or source_info(current)[0] != key:
+                    raise ValueError('The source or analysis changed. Restart the visual index.')
+                db = connection(job, key)
+                try:
+                    db.execute('INSERT OR REPLACE INTO frames VALUES (?,?,?,?)',
+                               (ident, shot['shot_number'], seconds, json.dumps(data) if data else None))
+                    db.commit()
+                finally:
+                    db.close()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _errors[job.job_id] = str(exc) if isinstance(exc, ValueError) else 'Indexing stopped. Retry to resume saved frames.'
+
+
+def start(job):
+    key, shots = source_info(job)
+    if job.job_id not in _tasks or _tasks[job.job_id].done():
+        _errors.pop(job.job_id, None)
+        _tasks[job.job_id] = asyncio.create_task(build(job, key, shots))
+    return status(job)
+
+
+async def stop(job_id):
+    task = _tasks.get(job_id)
+    if task and not task.done():
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    _tasks.pop(job_id, None)
+
+
+async def shutdown():
+    for job_id in list(_tasks):
+        await stop(job_id)
+
+
+def validate_frame(job, shot_number, seconds, revision):
+    key, shots = source_info(job)
+    if revision and key != revision:
+        raise ValueError('The analysis changed. Reopen Match cuts before continuing.')
+    shot = next((s for s in shots if s['shot_number'] == shot_number), None)
+    if not shot or not shot['start_seconds'] <= seconds < shot['end_seconds']:
+        raise ValueError('Choose a frame inside the selected shot.')
+    return key, shot
+
+
+def search(source, source_job, source_shot, targets, weights, region, limit):
+    best = {}
+    states = []
+    for job in targets:
+        state = status(job)
+        states.append(state)
+        key, shots = source_info(job)
+        by_number = {s['shot_number']: s for s in shots}
+        db = connection(job, key)
+        try:
+            for shot_number, seconds, raw in db.execute('SELECT shot,seconds,data FROM frames WHERE data IS NOT NULL'):
+                if job.job_id == source_job and shot_number == source_shot:
+                    continue
+                data = json.loads(raw)
+                if not data['usable']:
+                    continue
+                score = compare(source, data, weights, region)
+                if region and score['source_box'] is None:
+                    continue
+                shot = by_number.get(shot_number)
+                if not shot:
+                    continue
+                ident = (job.job_id, shot_number)
+                if ident in best and best[ident]['score'] >= score['score']:
+                    continue
+                best[ident] = {**score, 'job_id': job.job_id, 'shot_number': shot_number, 'seconds': seconds,
+                    'aspect_ratio': data.get('aspect_ratio', (job.technical.get('width') or 16) / (job.technical.get('height') or 9)),
+                    'revision': key, 'start_seconds': shot['start_seconds'], 'end_seconds': shot['end_seconds'],
+                    'title': job.metadata.get('title') or job.filename, 'filename': job.filename, 'description': shot['visual_description'],
+                    'frame_url': f'/api/visual/{job.job_id}/frame?shot_number={shot_number}&seconds={seconds}&revision={key}',
+                    'media_url': f'/api/library/{job.job_id}/media'}
+        finally:
+            db.close()
+    return {'matches': sorted(best.values(), key=lambda item: item['score'], reverse=True)[:limit], 'indexes': states,
+            'score_basis': 'local_visual_measurements', 'motion_supported': False}

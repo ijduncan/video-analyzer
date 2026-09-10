@@ -35,6 +35,8 @@ Human corrections must never migrate silently to a different shot after re-analy
 
 ## Next: archive-scale search
 
+An initial local visual match-cut index now supports shape, composition, and color, with region selection and A/B previews. It uses five samples per shot and classical contour/color measurements. Extend this with learned visual embeddings, denser boundary sampling, actual motion trajectories, and editor-labeled quality benchmarks before treating it as archive-scale match-cut retrieval. See [current implementation and limits](VISUAL_MATCH_CUTS.md).
+
 Introduce a shot embedding pipeline and vector index with provider/version provenance, hybrid text/vector ranking and structured filters. Compare managed Twelve Labs search against owning embeddings and the retrieval index. Preserve full-text search for exact client names, text, dialogue, identifiers and tags; embeddings complement those fields.
 
 Add query decomposition, evidence snippets, match ranges, retrieval explanations and relevance feedback. Measure false positives when queries combine action, object, camera movement, time of day, speech and rights status. Do not expose an uncalibrated similarity score as a probability of correctness.

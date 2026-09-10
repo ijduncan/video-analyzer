@@ -1,0 +1,91 @@
+import asyncio
+import math
+
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field, model_validator
+
+from app.routers.library import require_job
+from app.services import visual_index
+
+router = APIRouter(prefix='/api/visual')
+
+
+class MatchRequest(BaseModel):
+    shot_number: int = Field(ge=1)
+    seconds: float = Field(ge=0, allow_inf_nan=False)
+    revision: str = Field(min_length=1, max_length=100)
+    target_ids: list[str] = Field(min_length=1, max_length=20)
+    shape: float = Field(default=1, ge=0, le=1, allow_inf_nan=False)
+    composition: float = Field(default=1, ge=0, le=1, allow_inf_nan=False)
+    color: float = Field(default=1, ge=0, le=1, allow_inf_nan=False)
+    region: tuple[float, float, float, float] | None = None
+    limit: int = Field(default=12, ge=1, le=48)
+
+    @model_validator(mode='after')
+    def valid(self):
+        if self.shape + self.composition + self.color <= 0:
+            raise ValueError('Enable at least one matching dimension.')
+        if self.region:
+            x, y, w, h = self.region
+            if not all(math.isfinite(v) for v in self.region) or min(x, y) < 0 or min(w, h) < .02 or x + w > 1.001 or y + h > 1.001:
+                raise ValueError('Choose a valid region inside the frame.')
+        return self
+
+
+@router.get('/{job_id}/index')
+async def index_status(job_id: str):
+    try:
+        return visual_index.status(require_job(job_id))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+
+
+@router.post('/{job_id}/index', status_code=202)
+async def start_index(job_id: str):
+    try:
+        return visual_index.start(require_job(job_id))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+
+
+@router.post('/{job_id}/index/cancel')
+async def stop_index(job_id: str):
+    require_job(job_id)
+    await visual_index.stop(job_id)
+    return {'status': 'paused'}
+
+
+@router.get('/{job_id}/frame')
+async def get_frame(job_id: str, shot_number: int = Query(ge=1), seconds: float = Query(ge=0, allow_inf_nan=False),
+                    revision: str = Query(min_length=1, max_length=100)):
+    job = require_job(job_id)
+    try:
+        key, _ = visual_index.validate_frame(job, shot_number, seconds, revision)
+        path = await visual_index.frame(job, key, seconds)
+        return FileResponse(path, media_type='image/jpeg')
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+
+
+@router.post('/{job_id}/search')
+async def find_matches(job_id: str, body: MatchRequest):
+    job = require_job(job_id)
+    targets = [require_job(ident) for ident in dict.fromkeys(body.target_ids)]
+    try:
+        key, _ = visual_index.validate_frame(job, body.shot_number, body.seconds, body.revision)
+        for target in targets:
+            visual_index.source_info(target)
+        source = await asyncio.to_thread(visual_index.features, await visual_index.frame(job, key, body.seconds))
+        if not source['usable']:
+            raise ValueError('This frame is nearly blank. Choose a frame with visible detail.')
+        if body.region:
+            x, y, w, h = body.region
+            if not any(x <= s['box'][0] + s['box'][2] / 2 <= x + w and y <= s['box'][1] + s['box'][3] / 2 <= y + h for s in source['shapes']):
+                raise ValueError('No clear contour was detected in this region. Try a wider region or the whole frame.')
+        result = await asyncio.to_thread(visual_index.search, source, job_id, body.shot_number, targets,
+            {'shape': body.shape, 'composition': body.composition, 'color': body.color}, body.region, body.limit)
+        visual_index.validate_frame(require_job(job_id), body.shot_number, body.seconds, key)
+        return result
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))

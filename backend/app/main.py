@@ -24,6 +24,8 @@ async def lifespan(app: FastAPI):
     from app.services.job_runner import shutdown_jobs
     recover_interrupted_jobs()
     yield
+    from app.services.visual_index import shutdown
+    await shutdown()
     await shutdown_jobs()
 
 
@@ -38,7 +40,7 @@ app.add_middleware(
 )
 
 # Import and include routers
-from app.routers import upload, analyze, status, results, export, files, thumbnails, compare, library
+from app.routers import upload, analyze, status, results, export, files, thumbnails, compare, library, visual
 
 app.include_router(upload.router)
 app.include_router(analyze.router)
@@ -49,6 +51,7 @@ app.include_router(files.router)
 app.include_router(thumbnails.router)
 app.include_router(compare.router)
 app.include_router(library.router)
+app.include_router(visual.router)
 
 
 @app.get("/api/health")

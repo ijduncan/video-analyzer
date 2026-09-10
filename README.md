@@ -19,7 +19,13 @@ Search shot descriptions, colors, shot types, camera work, transcripts, section 
 
 ![Searching for red returns ten shots, with match explanations for red canyon walls, orange-red terrain, and red sparks.](docs/screenshots/metadata-search.png)
 
-Search currently uses keywords over saved metadata. Visual-similarity retrieval and match-cut discovery by shape, composition, and movement are future work, described in the [roadmap](docs/ROADMAP.md).
+Text search uses keywords over saved metadata and highlights matching words in shot details and source excerpts.
+
+## Explore visual match cuts
+
+Open **Match cuts** to connect shots through shape, composition, and color. Choose an outgoing frame, optionally select a region, and search the current project or selected projects. A persistent local index returns candidate frames with separate visual scores and outlined matching regions. Adjust both cut points, preview **A → B**, and export the pair's trim ranges as JSON.
+
+Indexing publishes saved frames progressively, supports pause/resume, and makes no Gemini API calls. This first version uses contour and color measurements at five samples per shot. Motion scoring, learned visual embeddings, and frame-accurate NLE export of adjusted match pairs are future work. See [the workflow, implementation, and limits](docs/VISUAL_MATCH_CUTS.md).
 
 ## Export useful information
 

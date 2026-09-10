@@ -36,6 +36,8 @@ async def delete_video(job_id: str, api_key: str | None = Depends(get_api_key)):
         update_job(job_id, status='error', error=str(exc), progress='Deletion could not safely continue')
         raise HTTPException(409, str(exc))
     remote_deleted = not bool(job.file_id)
+    from app.services.visual_index import stop
+    await stop(job_id)
     try:
         if job.file_id:
             try:
