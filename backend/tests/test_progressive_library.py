@@ -239,12 +239,18 @@ def test_thumbnails_hide_prior_run_files_and_version_fresh_evidence(client, asse
     assert public_thumbnail_urls() == (None, None)
     thumb.write_bytes(b'current run frame')
     os.utime(thumb, (epoch + 1, epoch + 1))
-    url = f'/api/thumbnails/{asset.job_id}/1?v={quote(started, safe="")}'
+    url = f'/api/thumbnails/{asset.job_id}/1?v={quote(f"{started}:{thumb.stat().st_mtime_ns}", safe="")}'
     assert public_thumbnail_urls() == (url, url)
     response = client.get(url)
     assert response.status_code == 200 and response.content == b'current run frame'
     # View enrichment must not persist an old URL into the underlying model result.
     assert 'thumbnail_url' not in job_store.get_job(asset.job_id).flash_result['scenes'][0]['shots'][0]
+
+    thumb.write_bytes(b'regenerated midpoint frame')
+    os.utime(thumb, (epoch + 2, epoch + 2))
+    refreshed = public_thumbnail_urls()
+    assert refreshed[0] == refreshed[1] and refreshed[0] != url
+    assert client.get(refreshed[0]).content == b'regenerated midpoint frame'
 
     later = '2026-09-09T12:05:00+00:00'
     later_epoch = datetime.fromisoformat(later).timestamp()
@@ -252,7 +258,7 @@ def test_thumbnails_hide_prior_run_files_and_version_fresh_evidence(client, asse
     assert public_thumbnail_urls() == (None, None)
     thumb.write_bytes(b'next run frame')
     os.utime(thumb, (later_epoch + 1, later_epoch + 1))
-    later_url = f'/api/thumbnails/{asset.job_id}/1?v={quote(later, safe="")}'
+    later_url = f'/api/thumbnails/{asset.job_id}/1?v={quote(f"{later}:{thumb.stat().st_mtime_ns}", safe="")}'
     assert later_url != url
     assert public_thumbnail_urls() == (later_url, later_url)
     assert client.get(later_url).content == b'next run frame'

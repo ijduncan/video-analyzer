@@ -40,12 +40,44 @@ export function LibraryWorkspace({ onOpenAnalyzer }: { onOpenAnalyzer: () => voi
   const dragDepth = useRef(0)
   const fileInput = useRef<HTMLInputElement>(null)
   const searchInput = useRef<HTMLInputElement>(null)
+  const workspace = useRef<HTMLDivElement>(null)
+  const libraryMain = useRef<HTMLElement>(null)
+  const libraryReturnFocus = useRef<HTMLElement | null>(null)
+  const libraryScrollTop = useRef(0)
+  const libraryWindowScroll = useRef({ x: 0, y: 0 })
+  const wasSelected = useRef(false)
   const refreshLibrary = useCallback(() => setRefresh(value => value + 1), [])
   const reviewFilter = review
   const pageContext = JSON.stringify([query, project, reviewFilter, tag, rights, collection, searchMode, sort])
   const page = pagination.context === pageContext ? pagination.page : 0
   const pageSize = 60
   const selectedId = selection?.id
+  const detailReady = !!selectedId && detail?.job_id === selectedId
+
+  function openVideo(next: NonNullable<typeof selection>) {
+    if (!selection) {
+      const activeElement = document.activeElement
+      libraryReturnFocus.current = activeElement instanceof HTMLElement && activeElement !== fileInput.current && libraryMain.current?.contains(activeElement) ? activeElement : searchInput.current
+      libraryScrollTop.current = libraryMain.current?.scrollTop || 0
+      libraryWindowScroll.current = { x: window.scrollX, y: window.scrollY }
+    }
+    setSelection(next); setDetailError(''); setDragging(false); dragDepth.current = 0
+  }
+
+  useEffect(() => {
+    if (selectedId) {
+      wasSelected.current = true
+      window.scrollTo(0, 0)
+      workspace.current?.querySelector<HTMLElement>('[data-video-back]')?.focus({ preventScroll: true })
+    } else if (wasSelected.current) {
+      wasSelected.current = false
+      if (libraryMain.current) libraryMain.current.scrollTop = libraryScrollTop.current
+      window.scrollTo(libraryWindowScroll.current.x, libraryWindowScroll.current.y)
+      const target = libraryReturnFocus.current
+      if (target?.isConnected && !target.closest('[hidden]')) target.focus({ preventScroll: true })
+      else searchInput.current?.focus({ preventScroll: true })
+    }
+  }, [selectedId, detailReady])
 
   useEffect(() => {
     let active = true
@@ -90,11 +122,11 @@ export function LibraryWorkspace({ onOpenAnalyzer }: { onOpenAnalyzer: () => voi
 
   useEffect(() => {
     function keydown(event: KeyboardEvent) {
-      if ((event.metaKey || event.ctrlKey) && event.key === 'k') { event.preventDefault(); searchInput.current?.focus() }
+      if (!selectedId && (event.metaKey || event.ctrlKey) && event.key === 'k') { event.preventDefault(); searchInput.current?.focus() }
     }
     window.addEventListener('keydown', keydown)
     return () => window.removeEventListener('keydown', keydown)
-  }, [])
+  }, [selectedId])
 
   async function importFiles(files: FileList | File[]) {
     const incoming = Array.from(files)
@@ -109,7 +141,7 @@ export function LibraryWorkspace({ onOpenAnalyzer }: { onOpenAnalyzer: () => voi
         try {
           const result = await uploadVideo(file, percent => setUpload(previous => previous ? { ...previous, percent } : previous))
           imported++; refreshLibrary()
-          if (incoming.length === 1) { setSelection({ id: result.job_id }); setDetailError('') }
+          if (incoming.length === 1) openVideo({ id: result.job_id })
         } catch (err) { errors.push(`${file.name}: ${errorMessage(err)}`) }
       }
       if (imported) setUploadNotice(`${imported} ${imported === 1 ? 'video' : 'videos'} imported.`)
@@ -123,8 +155,8 @@ export function LibraryWorkspace({ onOpenAnalyzer }: { onOpenAnalyzer: () => voi
   const hasFilters = !!(query || project || review || tag || rights || collection)
   const count = searchMode === 'shots' ? shotTotal : library?.total || 0
   const hasActiveFilters = !!(project || review || tag || rights || collection)
-  return <div className={`lw-workspace ${selection ? 'has-inspector' : ''}`}>
-    <main className="lw-main" onDragEnter={event => { event.preventDefault(); if (event.dataTransfer.types.includes('Files')) { dragDepth.current++; setDragging(true) } }} onDragOver={event => { if (event.dataTransfer.types.includes('Files')) event.preventDefault() }} onDragLeave={event => { event.preventDefault(); dragDepth.current--; if (dragDepth.current <= 0) { dragDepth.current = 0; setDragging(false) } }} onDrop={event => { event.preventDefault(); dragDepth.current = 0; setDragging(false); importFiles(event.dataTransfer.files) }}>
+  return <div ref={workspace} className={`lw-workspace ${selection ? 'has-video-workspace' : ''}`}>
+    <main ref={libraryMain} hidden={!!selection} className="lw-main" onDragEnter={event => { event.preventDefault(); if (event.dataTransfer.types.includes('Files')) { dragDepth.current++; setDragging(true) } }} onDragOver={event => { if (event.dataTransfer.types.includes('Files')) event.preventDefault() }} onDragLeave={event => { event.preventDefault(); dragDepth.current--; if (dragDepth.current <= 0) { dragDepth.current = 0; setDragging(false) } }} onDrop={event => { event.preventDefault(); dragDepth.current = 0; setDragging(false); importFiles(event.dataTransfer.files) }}>
       <h1 className="lw-sr-only">Footage library</h1>
       <div className="lw-library-content">
         <header className="lw-toolbar">
@@ -152,12 +184,12 @@ export function LibraryWorkspace({ onOpenAnalyzer }: { onOpenAnalyzer: () => voi
         {uploadNotice && <div className="lw-notice" role="status"><Icon name="check" size={17} /><span>{uploadNotice}</span><button className="lw-icon-button" aria-label="Dismiss notification" onClick={() => setUploadNotice('')}><Icon name="close" size={15} /></button></div>}
         {uploadError && <div className="lw-inline-error" role="alert">{uploadError}<button className="lw-text-button" onClick={() => setUploadError('')}>Dismiss</button></div>}
         {loading && library && <span className="lw-loading-status" role="status">Loading…</span>}
-        {error ? <div className="lw-empty-state lw-error-state"><h2>Couldn’t load footage</h2><p>{error}</p><button className="lw-button" onClick={refreshLibrary}>Try again</button></div> : loading && !library ? <div className="lw-asset-grid" aria-label="Loading library" aria-busy="true">{Array.from({ length: 6 }, (_, index) => <div className="lw-skeleton" key={index}><div /><span /><span /></div>)}</div> : !count ? <EmptyState hasLibrary={!!library?.stats.assets} filtered={hasFilters} shots={searchMode === 'shots'} onImport={() => fileInput.current?.click()} importing={!!upload} onClear={clearFilters} onVideos={() => setSearchMode('assets')} /> : <div className={`${layout === 'grid' ? 'lw-asset-grid' : 'lw-asset-list'} ${loading ? 'is-updating' : ''}`}>{searchMode === 'assets' ? assets.map(asset => <AssetCard key={asset.job_id} asset={asset} selected={selection?.id === asset.job_id} onClick={() => { setSelection({ id: asset.job_id }); setDetailError('') }} />) : shots.map(shot => <ShotCard key={`${shot.job_id}-${shot.shot_number}`} shot={shot} selected={selection?.id === shot.job_id && selection?.shot === shot.shot_number} onClick={() => { setSelection({ id: shot.job_id, seconds: shot.start_seconds, shot: shot.shot_number }); setDetailError('') }} />)}</div>}
+        {error ? <div className="lw-empty-state lw-error-state"><h2>Couldn’t load footage</h2><p>{error}</p><button className="lw-button" onClick={refreshLibrary}>Try again</button></div> : loading && !library ? <div className="lw-asset-grid" aria-label="Loading library" aria-busy="true">{Array.from({ length: 6 }, (_, index) => <div className="lw-skeleton" key={index}><div /><span /><span /></div>)}</div> : !count ? <EmptyState hasLibrary={!!library?.stats.assets} filtered={hasFilters} shots={searchMode === 'shots'} onImport={() => fileInput.current?.click()} importing={!!upload} onClear={clearFilters} onVideos={() => setSearchMode('assets')} /> : <div className={`${layout === 'grid' ? 'lw-asset-grid' : 'lw-asset-list'} ${loading ? 'is-updating' : ''}`}>{searchMode === 'assets' ? assets.map(asset => <AssetCard key={asset.job_id} asset={asset} selected={selection?.id === asset.job_id} onClick={() => openVideo({ id: asset.job_id })} />) : shots.map(shot => <ShotCard key={`${shot.job_id}-${shot.shot_number}`} shot={shot} selected={selection?.id === shot.job_id && selection?.shot === shot.shot_number} onClick={() => openVideo({ id: shot.job_id, seconds: shot.start_seconds, shot: shot.shot_number })} />)}</div>}
         {!error && count > pageSize && <div className="lw-pagination"><span>{(page * pageSize + 1).toLocaleString()}–{Math.min((page + 1) * pageSize, count).toLocaleString()} of {count.toLocaleString()}</span><div><button className="lw-button" disabled={page === 0 || loading} onClick={() => setPagination({ context: pageContext, page: page - 1 })}>Previous</button><button className="lw-button" disabled={(page + 1) * pageSize >= count || loading} onClick={() => setPagination({ context: pageContext, page: page + 1 })}>Next</button></div></div>}
       </div>
       {dragging && <div className="lw-drop-overlay"><Icon name="upload" size={32} /><h2>Drop videos here</h2></div>}
     </main>
-    {selection && (detail?.job_id === selection.id ? <AssetInspector key={`${selection.id}-${selection.shot || 'asset'}`} asset={detail} initialSeconds={selection.seconds} initialShot={selection.shot} capabilities={capabilities} onClose={() => setSelection(current => current?.id === selection.id ? null : current)} onRefresh={refreshLibrary} onConfigure={() => setSettings(true)} onRemoved={note => setUploadNotice(`Video removed.${note ? ` ${note}` : ''}`)} /> : <aside className="lw-inspector lw-inspector-loading"><button className="lw-icon-button" aria-label="Close asset details" onClick={() => setSelection(null)}><Icon name="close" /></button>{detailError ? <><p role="alert">{detailError}</p><button className="lw-button" onClick={refreshLibrary}>Try again</button></> : <p role="status">Opening…</p>}</aside>)}
+    {selection && (detail?.job_id === selection.id ? <AssetInspector key={`${selection.id}-${selection.shot || 'asset'}`} asset={detail} initialSeconds={selection.seconds} initialShot={selection.shot} capabilities={capabilities} onClose={() => setSelection(current => current?.id === selection.id ? null : current)} onRefresh={refreshLibrary} onConfigure={() => setSettings(true)} onRemoved={note => setUploadNotice(`Video removed.${note ? ` ${note}` : ''}`)} /> : <main className="lw-inspector lw-video-workspace lw-video-workspace-loading" aria-label="Video workspace"><button className="lw-button lw-back-to-library" data-video-back onClick={() => setSelection(null)}><Icon name="back" />Back to library</button>{detailError ? <><p role="alert">{detailError}</p><button className="lw-button" onClick={refreshLibrary}>Try again</button></> : <p role="status">Opening video…</p>}</main>)}
     {settings && <SettingsDialog capabilities={capabilities} onClose={() => setSettings(false)} onOpenAnalyzer={onOpenAnalyzer} />}
   </div>
 }

@@ -8,7 +8,7 @@ The rebuild passes its local automated suite and live Gemini compatibility check
 
 | Check | Result |
 |---|---|
-| Backend/media/export tests | 84 tests passed, with 49 passing parameterized subtests |
+| Backend/media/export tests | 89 tests passed, with 52 passing parameterized subtests |
 | Frontend TypeScript and production build | Passed; Vite production bundle generated |
 | Frontend ESLint | Passed |
 | Diff whitespace check | Passed |
@@ -68,6 +68,16 @@ Indexing now publishes shots and thumbnails after each 30-second processing sect
 Browser verification replayed those saved partial/final snapshots through a separate local server and database, with the provider key disabled. Ten shots and their thumbnails were available while status remained analyzing; playing shot ten sought to 27 seconds and started playback. Unsaved tags, the selected shot and active tab survived the fourteen-shot refresh. With both a project filter excluding all assets and a query returning no shots, polling continued and a newly matching shot appeared automatically. A simulated error displayed saved partial shots with playable cards. The isolated fixture was restored and the QA server/browser stopped. Screenshots are retained under ignored `artifacts/qa/progressive-ui-*.png`. At short viewport heights, the inspector scrolls to reveal live shot cards below the progress controls.
 
 The existing 152-second user asset completed under the previous pipeline. After the local server update, its saved three shots and metadata remained available; it was not reanalyzed during verification.
+
+## Full-window workspace and midpoint thumbnails
+
+Selected footage now occupies the full browser canvas. Desktop uses a large player beside a thumbnail shot grid, with Shots, Analysis and Metadata tabs; narrow screens stack these areas. The library remains mounted but hidden, preserving search/filter/page state and restoring focus and scroll on return. Generated analysis precedes its settings, and live progress stays beside the player.
+
+The isolated browser fixture was inspected at desktop and 390px mobile width. The mobile page and workspace both measured 390px with no horizontal overflow. Captured desktop evidence covers partial shot cards, playback selection, an unsaved metadata draft and restored library filters; no browser page errors were reported. The disposable fixture was restored and its server/browser stopped. Final frontend build and lint passed.
+
+Thumbnail extraction now chooses `start + (end - start) / 2`. Legacy invalid end timestamps fall back to a valid start; invalid starts are skipped. Images are replaced atomically, and URLs include file modification time so regenerated frames replace cached thumbnails. A real ffmpeg red-to-blue fixture verifies that extraction chooses the blue midpoint rather than the red opening. Additional tests cover fractional timing, fallbacks, extraction failures and thumbnail cache invalidation. The full automated suite passed 89 tests and 52 subtests.
+
+After both real assets finished analysis, their 51 thumbnails were regenerated locally: 48 for the Half-Life teaser and three for Timeline 4. Their analysis and metadata were preserved, with no additional Gemini calls. The updated teaser thumbnails were visually checked in the full-window workspace.
 
 ## Remaining validation
 

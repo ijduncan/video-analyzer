@@ -12,6 +12,7 @@ const paths = {
   folder: <path d="M3 7V4h6l3 3h9v13H3Z" />,
   spark: <><path d="m12 3 2.4 6.6L21 12l-6.6 2.4L12 21l-2.4-6.6L3 12l6.6-2.4Z" /><path d="M20 2v4m-2-2h4" /></>,
   arrow: <path d="M4 12h16m-6-6 6 6-6 6" />,
+  back: <path d="M20 12H4m6-6-6 6 6 6" />,
   chevron: <path d="m9 5 7 7-7 7" />,
   down: <path d="m5 9 7 7 7-7" />,
   close: <path d="m6 6 12 12M6 18 18 6" />,

@@ -6,6 +6,7 @@ import { useSettingsStore } from '../../stores/settingsStore'
 import { Icon } from './Icon'
 import { bytes, duration, errorMessage, reviewLabel, splitTags, timestamp } from './format'
 import { analysisFacts, analysisStageLabel, isActiveAnalysis } from './analysisProgress'
+import './VideoWorkspace.css'
 
 interface Props {
   asset: AssetDetail
@@ -19,7 +20,7 @@ interface Props {
 }
 
 export function AssetInspector({ asset, initialSeconds, initialShot, capabilities, onClose, onRefresh, onConfigure, onRemoved }: Props) {
-  const [tab, setTab] = useState<'metadata' | 'shots' | 'analysis'>(() => initialShot ? 'shots' : isActiveAnalysis(asset.status) ? 'analysis' : 'metadata')
+  const [tab, setTab] = useState<'metadata' | 'shots' | 'analysis'>('shots')
   const [draft, setDraft] = useState<AssetMetadata>(() => ({ ...asset.metadata }))
   const [baseline, setBaseline] = useState(() => JSON.stringify(asset.metadata))
   const [tags, setTags] = useState(() => asset.metadata.tags.join(', '))
@@ -47,6 +48,8 @@ export function AssetInspector({ asset, initialSeconds, initialShot, capabilitie
   const metadata = { ...draft, tags: splitTags(tags), collections: splitTags(collections) }
   const dirty = JSON.stringify(metadata) !== baseline
   const shots = asset.flash?.scenes.flatMap(scene => scene.shots.map(shot => ({ ...shot, scene_title: scene.scene_title }))) || []
+  const selectedIndex = Math.max(0, shots.findIndex(shot => shot.shot_number === previewedShot))
+  const selectedShot = shots[selectedIndex]
   const progress = (starting && !isActiveAnalysis(asset.status)) || (isActiveAnalysis(asset.status) && asset.analysis_progress?.stage === 'complete') ? null : asset.analysis_progress
   const retainedShots = shots.length > 0 && (progress?.completed_shots === 0 || (busy && !progress))
   const stage = starting && !isActiveAnalysis(asset.status) ? 'starting' : progress?.stage || (asset.status === 'queued' ? 'queued' : 'indexing')
@@ -66,7 +69,7 @@ export function AssetInspector({ asset, initialSeconds, initialShot, capabilitie
   async function analyze() {
     if (busy || removing || asset.status === 'deleting') return
     if (!capabilities?.google_configured && !apiKey) { onConfigure(); return }
-    setTab('analysis'); body.current?.scrollTo({ top: 0 })
+    setTab('shots'); body.current?.scrollTo({ top: 0 })
     setStarting(true); setError(''); setNotice('')
     try { await analyzeAsset(asset.job_id, mode, fps, prompt); onRefresh() }
     catch (err) { setError(errorMessage(err)) }
@@ -93,7 +96,6 @@ export function AssetInspector({ asset, initialSeconds, initialShot, capabilitie
     if (video.current) { video.current.currentTime = seconds; video.current.play().catch(() => {}) }
   }
   function playShot(shot: Shot) { setPreviewedShot(shot.shot_number); seek(timestamp(shot.start_time)) }
-  function showTab(next: 'shots' | 'analysis') { setTab(next); body.current?.scrollTo({ top: 0 }) }
   async function download(format: 'json' | 'csv' | 'xmp' | 'srt' | 'edl' | 'fcpxml') {
     setError('')
     try {
@@ -105,22 +107,35 @@ export function AssetInspector({ asset, initialSeconds, initialShot, capabilitie
       anchor.click(); setTimeout(() => URL.revokeObjectURL(objectUrl), 1000); setExporting(false)
     } catch (err) { setError(errorMessage(err)) }
   }
-  return <aside className="lw-inspector" aria-label="Footage details">
-    <div className="lw-inspector-heading"><h2 className="truncate" title={asset.filename} style={{ margin: 0, fontSize: 13, fontWeight: 500 }}>{asset.metadata.title || asset.filename}</h2><button className="lw-icon-button" aria-label="Close asset details" onClick={onClose}><Icon name="close" /></button></div>
-    <div className="lw-preview">
-      {asset.preview_url ? <video ref={video} src={asset.preview_url} poster={asset.thumbnail_url || undefined} controls preload="metadata" onLoadedMetadata={() => { if (video.current && initialSeconds != null) video.current.currentTime = initialSeconds }} /> : <div className="lw-no-preview"><Icon name="film" size={32} /><span>{asset.youtube_url ? 'Source video on YouTube' : 'Preview unavailable for this format'}</span>{asset.youtube_url && <a href={asset.youtube_url} target="_blank" rel="noreferrer">Open source ↗</a>}</div>}
-    </div>
-    <div className="lw-primary-action">
+  return <main className="lw-inspector lw-video-workspace" aria-label="Video workspace">
+    <header className="vw-header">
+      <button className="lw-text-button vw-back" data-video-back aria-label="Back to library" onClick={onClose}><Icon name="back" />Library</button>
+      <h1 title={asset.filename}>{asset.metadata.title || asset.filename}</h1>
+      <div className="vw-header-actions">
+        <div className="lw-export-wrap"><button className="lw-button" onClick={() => setExporting(!exporting)} aria-expanded={exporting}><Icon name="download" size={16} />Export<Icon name="down" size={12} /></button>{exporting && <div className="lw-export-menu">{(['json', 'csv', 'xmp', 'srt', 'edl', 'fcpxml'] as const).map(format => <button key={format} onClick={() => download(format)}><strong>{format.toUpperCase()}</strong><span>{{ json: 'Metadata', csv: 'Shot list', xmp: 'Sidecar', srt: 'Subtitles', edl: 'Edit list', fcpxml: 'Timeline' }[format]}</span></button>)}</div>}</div>
       <button className="lw-button lw-button-primary lw-analyze-primary" disabled={busy || removing || asset.status === 'deleting'} onClick={analyze}>
         <Icon name="spark" size={20} />
         {busy ? starting && !isActiveAnalysis(asset.status) ? 'Starting…' : asset.status === 'queued' ? 'Queued…' : 'Analyzing…' : !capabilities?.google_configured && !apiKey ? 'Connect Gemini' : asset.status === 'error' ? 'Retry analysis' : asset.flash ? 'Analyze again' : 'Analyze video'}
       </button>
-      {busy && tab !== 'analysis' && <button className="lw-active-analysis-link" onClick={() => showTab('analysis')}><span>{stageLabel}</span><span>{progressFacts.summary}<Icon name="arrow" size={13} /></span></button>}
-    </div>
-    <div className="lw-inspector-tabs" role="tablist" aria-label="Asset information">{(['metadata', 'shots', 'analysis'] as const).map(value => <button id={`asset-tab-${value}`} aria-controls={`asset-panel-${value}`} role="tab" tabIndex={tab === value ? 0 : -1} onKeyDown={event => { const items = ['metadata', 'shots', 'analysis'] as const; const current = items.indexOf(tab); const next = event.key === 'ArrowRight' ? (current + 1) % items.length : event.key === 'ArrowLeft' ? (current + items.length - 1) % items.length : event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : -1; if (next >= 0) { event.preventDefault(); setTab(items[next]); document.getElementById(`asset-tab-${items[next]}`)?.focus() } }} aria-selected={tab === value} onClick={() => setTab(value)} key={value}>{value === 'shots' ? 'Shots' : value === 'analysis' ? 'Analysis' : 'Metadata'}</button>)}</div>
+      </div>
+    </header>
+    <div className="vw-layout">
+      <div className="vw-viewer">
+        <div className="lw-preview">
+          {asset.preview_url ? <video ref={video} src={asset.preview_url} poster={asset.thumbnail_url || undefined} controls preload="metadata" onLoadedMetadata={() => { if (video.current && initialSeconds != null) video.current.currentTime = initialSeconds }} /> : <div className="lw-no-preview"><Icon name="film" size={32} /><span>{asset.youtube_url ? 'Source video on YouTube' : 'Preview unavailable for this format'}</span>{asset.youtube_url && <a href={asset.youtube_url} target="_blank" rel="noreferrer">Open source ↗</a>}</div>}
+        </div>
+        {selectedShot && <div className="vw-shot-context">
+          <div className="vw-shot-transport"><strong>Shot {String(selectedShot.shot_number).padStart(2, '0')}</strong><time>{selectedShot.start_time} – {selectedShot.end_time}</time><div><button className="lw-icon-button" aria-label="Previous shot" disabled={selectedIndex === 0 || !asset.preview_url} onClick={() => playShot(shots[selectedIndex - 1])}><Icon name="chevron" style={{ transform: 'rotate(180deg)' }} /></button><button className="lw-icon-button" aria-label="Next shot" disabled={selectedIndex >= shots.length - 1 || !asset.preview_url} onClick={() => playShot(shots[selectedIndex + 1])}><Icon name="chevron" /></button></div></div>
+          <p>{selectedShot.visual_description}</p>
+        </div>}
+        {busy && <div className="vw-progress"><div className="lw-analysis-progress" role="status" aria-live="polite" aria-atomic="true"><div className="lw-progress-orbit" /><div><strong>{stageLabel}</strong><p>{progressFacts.summary}</p>{progressFacts.coverage && <small>{progressFacts.coverage}</small>}</div></div><button className="lw-text-button" onClick={cancel} disabled={starting}>Cancel analysis</button></div>}
+        {asset.error && <div className="lw-inline-error" role="alert">{asset.error}</div>}
+      </div>
+      <div className="vw-data">
+    <div className="lw-inspector-tabs" role="tablist" aria-label="Asset information">{(['shots', 'analysis', 'metadata'] as const).map(value => <button id={`asset-tab-${value}`} aria-controls={`asset-panel-${value}`} role="tab" tabIndex={tab === value ? 0 : -1} onKeyDown={event => { const items = ['shots', 'analysis', 'metadata'] as const; const current = items.indexOf(tab); const next = event.key === 'ArrowRight' ? (current + 1) % items.length : event.key === 'ArrowLeft' ? (current + items.length - 1) % items.length : event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : -1; if (next >= 0) { event.preventDefault(); setTab(items[next]); document.getElementById(`asset-tab-${items[next]}`)?.focus() } }} aria-selected={tab === value} onClick={() => setTab(value)} key={value}>{value === 'shots' ? 'Shots' : value === 'analysis' ? 'Analysis' : 'Metadata'}</button>)}</div>
     <div ref={body} className="lw-inspector-body" role="tabpanel" id={`asset-panel-${tab}`} aria-labelledby={`asset-tab-${tab}`}>
       {error && <div className="lw-inline-error" role="alert">{error}</div>}{notice && <div className="lw-inline-success" role="status">{notice}</div>}
-      {warnings.length > 0 && <details className="lw-details"><summary>Analysis notes<Icon name="down" size={14} /></summary><div className="lw-analysis-warning">{warnings.map(warning => <p key={warning}>{warning}</p>)}</div></details>}
+      {tab === 'analysis' && warnings.length > 0 && <details className="lw-details"><summary>Analysis notes<Icon name="down" size={14} /></summary><div className="lw-analysis-warning">{warnings.map(warning => <p key={warning}>{warning}</p>)}</div></details>}
       {tab === 'metadata' && <>
         {asset.summary && <details className="lw-details"><summary>AI summary<Icon name="down" size={14} /></summary><p className="lw-panel-description">{asset.summary}</p></details>}
         <label className="lw-field">Title<input value={draft.title} onChange={event => field('title', event.target.value)} placeholder={asset.filename} /></label>
@@ -137,13 +152,14 @@ export function AssetInspector({ asset, initialSeconds, initialShot, capabilitie
       </>}
       {tab === 'shots' && <>
         {retainedShots && <p className="lw-live-result-note">{busy ? 'Previous analysis is shown until this run returns shots.' : 'Previous analysis retained.'}</p>}
-        {shots.length ? shots.map(shot => <ShotEditor key={`${shot.shot_number}-${shot.start_time}-${shot.end_time}`} jobId={asset.job_id} shot={shot} annotation={asset.shot_annotations?.[String(shot.shot_number)]} selected={shot.shot_number === previewedShot} onSeek={() => playShot(shot)} onRefresh={onRefresh} />) : <div className="lw-panel-empty"><p>{busy ? 'Shots appear as each section finishes.' : 'No shots yet.'}</p></div>}
+        {!retainedShots && asset.status === 'error' && shots.length > 0 && <p className="lw-live-result-note">Saved partial shots</p>}
+        {shots.length ? <div className="vw-shot-grid">{shots.map(shot => <ShotEditor key={`${shot.shot_number}-${shot.start_time}-${shot.end_time}`} jobId={asset.job_id} shot={shot} annotation={asset.shot_annotations?.[String(shot.shot_number)]} selected={shot.shot_number === selectedShot?.shot_number} canPreview={!!asset.preview_url} onSeek={() => playShot(shot)} onRefresh={onRefresh} />)}</div> : <div className="lw-panel-empty"><Icon name="film" size={30} /><p>{busy ? 'Shots appear as each section finishes.' : 'Analyze this video to find shots.'}</p></div>}
       </>}
       {tab === 'analysis' && <>
-        {busy && <div className="lw-analysis-progress" role="status" aria-live="polite" aria-atomic="true"><div className="lw-progress-orbit" /><div><strong>{stageLabel}</strong><p>{progressFacts.summary}</p>{progressFacts.coverage && <small>{progressFacts.coverage}</small>}</div></div>}
-        {asset.error && <div className="lw-inline-error">{asset.error}</div>}
-        {busy && <button className="lw-text-button lw-cancel-analysis" onClick={cancel} disabled={starting}>Cancel analysis</button>}
-        {(busy || shots.length > 0 || asset.status === 'complete' || asset.status === 'error') && <LiveShotResults shots={shots} retained={retainedShots} busy={busy} stage={stage} completedSections={progress?.completed_sections || 0} failed={asset.status === 'error'} selected={previewedShot} canPreview={!!asset.preview_url} onPlay={playShot} onAll={() => showTab('shots')} />}
+        {asset.video_summary && <details className="lw-details" open><summary>Summary<Icon name="down" size={14} /></summary><p className="lw-panel-description">{asset.video_summary.executive_summary}</p><dl><div><dt>Visual style</dt><dd>{asset.video_summary.visual_style}</dd></div><div><dt>Audience</dt><dd>{asset.video_summary.target_audience}</dd></div></dl></details>}
+        {!!asset.deep?.length && <details className="lw-details" open><summary>{usesSections ? 'Sections' : 'Scenes'}<Icon name="down" size={14} /></summary>{asset.deep.map(scene => <details className="lw-details" key={scene.scene_number}><summary>{usesSections ? 'Section' : 'Scene'} {scene.scene_number}<Icon name="down" size={14} /></summary><dl>{Object.entries(scene.visual_analysis || {}).filter(([, value]) => value).map(([key, value]) => <div key={key}><dt>{key.replaceAll('_', ' ')}</dt><dd>{value}</dd></div>)}{scene.narrative_context?.story_beat && <div><dt>Story beat</dt><dd>{scene.narrative_context.story_beat}</dd></div>}{scene.audio_analysis?.dialogue && <div><dt>Dialogue notes</dt><dd>{scene.audio_analysis.dialogue}</dd></div>}</dl></details>)}</details>}
+        {!!asset.transcript?.length && <details className="lw-details"><summary>Transcript<Icon name="down" size={14} /></summary>{asset.transcript.map((segment, index) => <button className="lw-transcript-line" key={index} onClick={() => seek(segment.start_seconds ?? timestamp(segment.start_time || '0'))}><time>{segment.start_time || duration(segment.start_seconds)}</time><span>{segment.speaker && <strong>{segment.speaker}: </strong>}{segment.text}</span></button>)}</details>}
+        <details className="lw-details vw-analysis-settings" open={!asset.flash}><summary>Analysis settings<Icon name="down" size={14} /></summary><div className="vw-settings-content">
         <label className="lw-field">Analysis<select value={mode} onChange={event => setMode(event.target.value as 'flash_only' | 'flash_pro')}><option value="flash_only">Shots and tags</option><option value="flash_pro">Full analysis</option></select></label>
         <details className="lw-details"><summary>Options<Icon name="down" size={14} /></summary><div style={{ paddingTop: 14 }}>
           <label className="lw-field">Sampling<select value={fps} onChange={event => setFps(Number(event.target.value))}>{![0.5, 1, 2, 3, 4, 5].includes(fps) && <option value={fps}>{fps} fps</option>}{[0.5, 1, 2, 3, 4, 5].map(value => <option value={value} key={value}>{value} fps{value === 4 ? ' · fast action' : ''}</option>)}</select><span className="lw-field-hint">Higher sampling uses more tokens. Short cuts may be missed.</span></label>
@@ -152,52 +168,25 @@ export function AssetInspector({ asset, initialSeconds, initialShot, capabilitie
         </div></details>
         <p className="lw-model-note">Gemini API charges apply.</p>
         {asset.analysis_config?.analysis_model && <details className="lw-details"><summary>Run details<Icon name="down" size={14} /></summary><dl><div><dt>Index model</dt><dd>{asset.analysis_config.analysis_model}</dd></div>{asset.analysis_config.mode === 'flash_pro' && <div><dt>Creative model</dt><dd>{asset.analysis_config.deep_model}</dd></div>}<div><dt>Sampling</dt><dd>{asset.analysis_config.fps} frame(s) per second</dd></div><div><dt>Schema</dt><dd>{asset.flash?.schema_version || 'Legacy'}</dd></div><div><dt>Started</dt><dd>{asset.analysis_config.started_at ? new Date(asset.analysis_config.started_at).toLocaleString() : 'Not recorded'}</dd></div><div><dt>Timestamp precision</dt><dd>Approximate · verify against source before editing</dd></div>{asset.cost_estimate && <div><dt>Estimated API cost</dt><dd>{asset.cost_estimate.estimated_cost_usd == null ? 'Unavailable for this model or usage record' : `$${asset.cost_estimate.estimated_cost_usd.toFixed(4)} USD`}</dd></div>}</dl>{asset.cost_estimate?.warnings?.map(warning => <p className="lw-model-note" key={warning}>{warning}</p>)}</details>}
-        {asset.video_summary && <details className="lw-details"><summary>Summary<Icon name="down" size={14} /></summary><p className="lw-panel-description">{asset.video_summary.executive_summary}</p><dl><div><dt>Visual style</dt><dd>{asset.video_summary.visual_style}</dd></div><div><dt>Audience</dt><dd>{asset.video_summary.target_audience}</dd></div></dl></details>}
-        {!!asset.deep?.length && <details className="lw-details"><summary>{usesSections ? 'Sections' : 'Scenes'}<Icon name="down" size={14} /></summary>{asset.deep.map(scene => <details className="lw-details" key={scene.scene_number}><summary>{usesSections ? 'Section' : 'Scene'} {scene.scene_number}<Icon name="down" size={14} /></summary><dl>{Object.entries(scene.visual_analysis || {}).filter(([, value]) => value).map(([key, value]) => <div key={key}><dt>{key.replaceAll('_', ' ')}</dt><dd>{value}</dd></div>)}{scene.narrative_context?.story_beat && <div><dt>Story beat</dt><dd>{scene.narrative_context.story_beat}</dd></div>}{scene.audio_analysis?.dialogue && <div><dt>Dialogue notes</dt><dd>{scene.audio_analysis.dialogue}</dd></div>}</dl></details>)}</details>}
-        {!!asset.transcript?.length && <details className="lw-details"><summary>Transcript<Icon name="down" size={14} /></summary>{asset.transcript.map((segment, index) => <button className="lw-transcript-line" key={index} onClick={() => seek(segment.start_seconds ?? timestamp(segment.start_time || '0'))}><time>{segment.start_time || duration(segment.start_seconds)}</time><span>{segment.speaker && <strong>{segment.speaker}: </strong>}{segment.text}</span></button>)}</details>}
+        </div></details>
       </>}
     </div>
-    <div className="lw-inspector-footer"><div className="lw-export-wrap"><button className="lw-button" onClick={() => setExporting(!exporting)} aria-expanded={exporting}><Icon name="download" size={16} />Export<Icon name="down" size={12} /></button>{exporting && <div className="lw-export-menu">{(['json', 'csv', 'xmp', 'srt', 'edl', 'fcpxml'] as const).map(format => <button key={format} onClick={() => download(format)}><strong>{format.toUpperCase()}</strong><span>{{ json: 'Metadata', csv: 'Shot list', xmp: 'Sidecar', srt: 'Subtitles', edl: 'Edit list', fcpxml: 'Timeline' }[format]}</span></button>)}</div>}</div>{tab === 'metadata' ? <button className="lw-button lw-button-primary" disabled={!dirty || saving || removing} onClick={save}>{saving ? 'Saving…' : dirty ? 'Save' : 'Saved'}<Icon name="check" size={15} /></button> : <button className="lw-button" onClick={() => setTab('metadata')}>Metadata<Icon name="arrow" size={15} /></button>}</div>
-  </aside>
+    {tab === 'metadata' && <div className="lw-inspector-footer"><button className="lw-button lw-button-primary" disabled={!dirty || saving || removing} onClick={save}>{saving ? 'Saving…' : dirty ? 'Save metadata' : 'Saved'}<Icon name="check" size={15} /></button></div>}
+      </div>
+    </div>
+  </main>
 }
 
-function LiveShotResults({ shots, retained, busy, stage, completedSections, failed, selected, canPreview, onPlay, onAll }: {
-  shots: (Shot & { scene_title: string })[]
-  retained: boolean
-  busy: boolean
-  stage: string
-  completedSections: number
-  failed: boolean
-  selected?: number
-  canPreview: boolean
-  onPlay: (shot: Shot) => void
-  onAll: () => void
-}) {
-  const latest = shots.slice(-3).reverse()
-  const heading = retained ? 'Previous shots' : failed ? 'Saved partial shots' : busy ? 'Latest shots' : 'Shots'
-  const emptyMessage = !busy ? (failed ? 'No shots were saved.' : 'No shots found.')
-    : stage === 'queued' ? 'Waiting to start.'
-      : stage === 'uploading' ? 'Preparing video for analysis.'
-        : completedSections > 0 ? 'No shots found in completed sections yet.' : 'Waiting for the first analyzed section.'
-  return <section className="lw-live-results" aria-label="Available analysis shots">
-    <div className="lw-live-results-heading"><h3>{heading}</h3>{shots.length > 0 && <button className="lw-text-button" onClick={onAll}>All shots<Icon name="arrow" size={13} /></button>}</div>
-    {retained && <p className="lw-live-result-note">{busy ? 'Previous analysis is shown until this run returns shots.' : 'Previous analysis retained.'}</p>}
-    {latest.length > 0 ? <div className="lw-live-shot-list">{latest.map(shot => <button className={`lw-live-shot ${selected === shot.shot_number ? 'is-selected' : ''}`} key={`${shot.shot_number}-${shot.start_time}-${shot.end_time}`} onClick={() => onPlay(shot)} disabled={!canPreview} aria-label={`Play shot ${shot.shot_number} at ${shot.start_time}`} title={canPreview ? undefined : 'Video preview unavailable'}>
-      <span className="lw-live-shot-image">{shot.thumbnail_url ? <img src={shot.thumbnail_url} alt="" loading="lazy" /> : <Icon name="play" size={17} />}</span>
-      <span className="lw-live-shot-copy"><span className="lw-live-shot-title"><strong>Shot {shot.shot_number}</strong><time>{shot.start_time}–{shot.end_time}</time></span><span className="lw-live-shot-description">{shot.visual_description || shot.scene_title}</span></span>
-    </button>)}</div> : <p className="lw-live-result-note" role="status">{emptyMessage}</p>}
-  </section>
-}
-
-function ShotEditor({ jobId, shot, annotation, selected, onSeek, onRefresh }: {
+function ShotEditor({ jobId, shot, annotation, selected, canPreview, onSeek, onRefresh }: {
   jobId: string
   shot: Shot & { scene_title: string }
   annotation?: ShotAnnotation
   selected: boolean
+  canPreview: boolean
   onSeek: () => void
   onRefresh: () => void
 }) {
-  const [expanded, setExpanded] = useState(selected)
+  const [expanded, setExpanded] = useState(false)
   const [tags, setTags] = useState(annotation?.tags.join(', ') || '')
   const [notes, setNotes] = useState(annotation?.notes || '')
   const [review, setReview] = useState<ReviewStatus>(annotation?.review_status || 'unreviewed')
@@ -210,7 +199,8 @@ function ShotEditor({ jobId, shot, annotation, selected, onSeek, onRefresh }: {
     catch (err) { setError(errorMessage(err)) } finally { setSaving(false) }
   }
   return <div className={`lw-shot-detail ${selected ? 'is-selected' : ''}`}>
-    <button className="lw-shot-jump" onClick={onSeek} aria-label={`Play shot ${shot.shot_number} at ${shot.start_time}`}><span className="lw-shot-play"><Icon name="play" size={15} /></span><span><strong>Shot {String(shot.shot_number).padStart(2, '0')}</strong><time>{shot.start_time} — {shot.end_time}</time></span><span className={`lw-review-dot ${review}`} title={reviewLabel(review)} /></button>
+    <button className="vw-shot-thumbnail" disabled={!canPreview} onClick={onSeek} aria-label={`Play shot ${shot.shot_number} at ${shot.start_time}`} aria-pressed={selected}>{shot.thumbnail_url ? <img src={shot.thumbnail_url} alt="" loading="lazy" /> : <Icon name="film" size={30} />}<span className="vw-thumbnail-play"><Icon name="play" size={22} /></span></button>
+    <div className="vw-shot-caption"><strong>Shot {String(shot.shot_number).padStart(2, '0')}</strong><span className={`lw-review-dot ${review}`} title={reviewLabel(review)} /><time>{shot.start_time} — {shot.end_time}</time></div>
     <p>{shot.visual_description}</p><div className="lw-tags">{[shot.shot_type, shot.camera_movement, shot.mood].filter(Boolean).map((value, i) => <span key={`${value}-${i}`}>{value}</span>)}</div>
     {!!shot.tags?.length && <details className="lw-details"><summary>AI tags<Icon name="down" size={13} /></summary><div className="lw-tags">{shot.tags.map(tag => <span key={tag}>{tag}</span>)}</div></details>}
     {(shot.evidence?.length || shot.visible_text?.length || shot.logos?.length || shot.subjects?.length || shot.actions?.length || shot.location || shot.transcript || shot.audio_notes) ? <details className="lw-details lw-shot-evidence"><summary>Details<Icon name="down" size={13} /></summary><dl>{shot.subjects?.length > 0 && <div><dt>Subjects</dt><dd>{shot.subjects.join(', ')}</dd></div>}{!!shot.actions?.length && <div><dt>Actions</dt><dd>{shot.actions.join(', ')}</dd></div>}{!!shot.visible_text?.length && <div><dt>Visible text</dt><dd>{shot.visible_text.join(' · ')}</dd></div>}{!!shot.logos?.length && <div><dt>Potential logos</dt><dd>{shot.logos.join(', ')}</dd></div>}{shot.location && <div><dt>Location description</dt><dd>{shot.location}</dd></div>}{shot.transcript && <div><dt>Model transcript</dt><dd>{shot.transcript}</dd></div>}{shot.audio_notes && <div><dt>Audio observations</dt><dd>{shot.audio_notes}</dd></div>}{shot.evidence?.map((evidence, index) => <div key={index}><dt>{evidence.modality} · {evidence.start_time}–{evidence.end_time}</dt><dd>{evidence.description}</dd></div>)}</dl><p className="lw-model-note">Model observations are unverified. Shot timestamps are approximate.{shot.confidence != null ? ' Model confidence is uncalibrated and is not a reliability score.' : ''}</p></details> : null}

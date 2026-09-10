@@ -20,17 +20,20 @@ def seconds(value: str) -> float:
 
 def thumbnail_url(job, number):
     thumb = Path(settings.upload_dir) / job.job_id / 'thumbs' / f'shot_{number}.jpg'
-    if not thumb.is_file():
+    try:
+        stat = thumb.stat()
+    except OSError:
         return None
     started = job.analysis_config.get('started_at')
     if started:
         try:
             # A stale file must never illustrate a different interval during reanalysis.
-            if thumb.stat().st_mtime < datetime.fromisoformat(started).timestamp():
+            if stat.st_mtime < datetime.fromisoformat(started).timestamp():
                 return None
         except (ValueError, TypeError, OSError):
             return None
-    version = quote(str(started or thumb.stat().st_mtime_ns), safe='')
+    # A regenerated frame must replace the browser's cached image within the same run.
+    version = quote(f'{started or ""}:{stat.st_mtime_ns}', safe='')
     return f'/api/thumbnails/{job.job_id}/{number}?v={version}'
 
 
