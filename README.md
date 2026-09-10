@@ -1,17 +1,44 @@
 # Video Analyzer
 
-An agency-first footage library with Gemini video analysis, editable shot metadata, and portable editorial handoffs. Built for finding and reusing footage across client projects, with a deeper analysis workspace for filmmakers.
+Turn footage into a searchable shot library with Gemini analysis, editable metadata, and exports for the edit. Built for agency teams finding and reusing footage, and filmmakers exploring their material.
 
-## What works
+![Video Analyzer showing a large footage preview beside shot thumbnails, descriptions, camera movements, and tags.](docs/screenshots/shot-workspace.png)
 
-- **Persistent library:** SQLite stores assets, analysis results, annotations, project/client/campaign data, collections, rights status, and review decisions across restarts.
-- **Local-first import:** import multiple videos without an AI key; ffprobe reads source duration, resolution, codec, frame rate, audio presence and embedded timecode. ffmpeg produces actual footage posters and shot thumbnails.
-- **Projects and discovery:** each import is a separate project. Shots view always searches one project, with review, tag and rights filters. Inside a video, search shot metadata, colors, camera work, transcripts, section analysis, summaries, custom analysis and human annotations together. Results explain which information matched; section analysis links back to its shots. Search uses keywords, not vector similarity.
-- **Progressive analysis:** known-duration videos are indexed in 30-second processing sections. Shots and thumbnails appear as each section finishes, with successful section counts and source time processed. These section edges are not claimed to be editorial cuts. Gemini proposes shots, subjects, actions, visible text, logos, location, cinematography and timestamped evidence. Human tags/notes remain separate. The full preset adds detailed notes, summary and related shots afterward.
-- **Background processing:** analysis continues when a library tab closes, progress and completed stages persist, duplicate runs are rejected, and interrupted runs are identified on restart. Retry is explicit; a restart does not automatically resume external model calls.
-- **Editorial review:** open a full-window video workspace with a large player, thumbnail shot grid, analysis and metadata. Thumbnails use each shot's midpoint. Seek between shots, edit tags and notes, record rights and review status, and return to the library with your search and filters intact.
-- **Export workspace:** export the whole video or selected shots as JSON, UTF-8 CSV, XMP, transcript SRT, EDL or Final Cut Pro XML. Unavailable formats explain their requirements. Copy individual in/out times, a shot range, or all ranges. Original source coordinates are preserved; media is not rendered or included.
-- **Original analyzer:** the earlier scene timeline, detail, comparison and report views remain available from **Analyzer**.
+## From import to edit
+
+1. **Import a video as its own project.** Preview and organize local footage without an AI key. Source facts, analysis, tags, notes, collections, and review decisions persist in SQLite across restarts.
+2. **Choose Shots and tags or Full analysis.** Gemini describes shots, subjects, actions, colors, camera movement, and audio. Full analysis adds deeper cinematography, editing, narrative notes, and a video summary. Known-duration videos are processed in 30-second sections; shots and midpoint thumbnails appear as sections finish after provider upload processing.
+3. **Find and review shots.** Search inside one project, play matching shots, edit human tags and notes, and record review and usage-rights status. Open an analysis section to jump back to its shots.
+4. **Export the whole video or selected shots.** Download metadata and editorial interchange files, or copy individual in/out times and shot ranges.
+
+Analysis runs in the background while the server is running, including when the browser tab closes. Partial results persist, duplicate runs are rejected, and interrupted runs are identified on restart. Retry is explicit; restarting the server does not automatically resume model calls.
+
+## Search the details you remember
+
+Search shot descriptions, colors, shot types, camera work, transcripts, section analysis, summaries, custom analysis, and human annotations. Results explain whether a match comes from the shot itself or from broader section/video context. Project, tag, review, collection, and rights filters help narrow the library.
+
+![Searching for red returns ten shots, with match explanations for red canyon walls, orange-red terrain, and red sparks.](docs/screenshots/metadata-search.png)
+
+Search currently uses keywords over saved metadata. Visual-similarity retrieval and match-cut discovery by shape, composition, and movement are future work, described in the [roadmap](docs/ROADMAP.md).
+
+## Export useful information
+
+The dedicated Export screen supports the whole project or one or more selected shots. Available formats depend on the saved analysis and source timing; unavailable options explain what is missing.
+
+![Export workspace with whole-video and selected-shot scope, six file formats, and Final Cut Pro XML selected.](docs/screenshots/export-workspace.png)
+
+| Format | Handoff |
+|---|---|
+| JSON | Structured metadata, annotations, analysis, and provenance |
+| CSV | UTF-8 shot lists for spreadsheets and production handoffs |
+| XMP | Metadata sidecars with timed shot markers |
+| SRT | Subtitles from available timed transcript cues |
+| EDL | Video-only edit lists with supported source timecode |
+| Final Cut Pro XML | Shot sequences referencing the original media |
+
+Exports preserve source coordinates and do not render or package video files. Selections from an older analysis are blocked until refreshed. See [accuracy and export boundaries](#accuracy-and-export-boundaries) for timing, subtitle, and editor compatibility details.
+
+The original scene timeline, comparison, and report views remain available from **Analyzer**.
 
 ## Run locally
 
