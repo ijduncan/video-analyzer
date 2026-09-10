@@ -23,7 +23,7 @@ export function MatchCutPanel({ asset, shots, initialShot }: { asset: AssetDetai
   const [weights, setWeights] = useState({ shape: 1, composition: 0, color: 0 })
   const [region, setRegion] = useState<number[] | null>(null)
   const [sourceShapeId, setSourceShapeId] = useState<number | null>(null)
-  const [alignShape, setAlignShape] = useState(false)
+  const [alignShape, setAlignShape] = useState(true)
   const [knownShapes, setKnownShapes] = useState<{ key: string; forms: VisualShape[] } | null>(null)
   const [result, setResult] = useState<VisualResults | null>(null)
   const [selected, setSelected] = useState<VisualMatch | null>(null)

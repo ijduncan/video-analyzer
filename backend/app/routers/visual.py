@@ -28,7 +28,7 @@ class MatchRequest(BaseModel):
     prepare_composition: bool = True
     prepare_shape: bool = True
     source_shape_id: int | None = Field(default=None, ge=0, le=5)
-    align_shape: bool = False
+    align_shape: bool = True
 
     @model_validator(mode='after')
     def valid(self):

@@ -75,7 +75,7 @@ def test_api_uses_fixed_silhouettes_and_polling_never_calls_provider(client, vis
         pytest.fail('Polling must never call Gemini')
     monkeypatch.setattr(shape_index, 'generate', forbidden)
     body = {'shot_number': 1, 'seconds': 1.5, 'revision': state['revision'], 'target_ids': [ident],
-            'shape': 1, 'composition': 0, 'color': 0, 'prepare_shape': False}
+            'shape': 1, 'composition': 0, 'color': 0, 'prepare_shape': False, 'align_shape': False}
     response = client.post(f'/api/visual/{ident}/search', json=body)
     assert response.status_code == 200, response.text
     data = response.json()
@@ -85,6 +85,8 @@ def test_api_uses_fixed_silhouettes_and_polling_never_calls_provider(client, vis
     assert match['shape_label'] == 'moon' and match['shape_summary'] == 'wheel → moon'
     assert match['target_outline'] and match['target_box'] is None
     assert client.post(f'/api/visual/{ident}/search', json={**body, 'align_shape': True}).json()['matches'] == []
+    default_body = {k: v for k, v in body.items() if k != 'align_shape'}
+    assert client.post(f'/api/visual/{ident}/search', json=default_body).json()['matches'] == []
     assert client.post(f'/api/visual/{ident}/search', json={**body, 'region': [0, 0, .03, .03]}).status_code == 409
     assert client.post(f'/api/visual/{ident}/search', json={**body, 'source_shape_id': 5}).status_code == 409
 
