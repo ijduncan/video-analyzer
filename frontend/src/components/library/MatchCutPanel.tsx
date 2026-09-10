@@ -7,6 +7,7 @@ import { visualFrame, visualRequest } from '../../api/visual'
 import type { VisualIndex, VisualMatch, VisualResults, VisualShape } from '../../api/visual'
 import { errorMessage, timestamp } from './format'
 import { readMatchCutSession, saveMatchCutSession } from './matchCutSession'
+import { ProjectSearchPicker } from './ProjectSearchPicker'
 import './MatchCutPanel.css'
 
 const AXES = ['shape', 'composition', 'color'] as const
@@ -192,7 +193,7 @@ export function MatchCutPanel({ asset, shots, initialShot, useInitialShot = fals
         const next = shots.find(s => s.shot_number === Number(event.target.value))!
         setShotNumber(next.shot_number); setSeconds(midpoint(next)); setFrameSeconds(midpoint(next)); setRegion(null); setSourceShapeId(null); setSelected(null)
       }}>{shots.map(s => <option key={s.shot_number} value={s.shot_number}>Shot {String(s.shot_number).padStart(2, '0')} · {s.start_time}</option>)}</select></label>
-      <details className="mc-projects"><summary>Search {targetIds.length} project{targetIds.length === 1 ? '' : 's'}</summary>{projects.map(p => <label key={p.id}><input type="checkbox" checked={targetIds.includes(p.id)} onChange={event => setTargetIds(ids => event.target.checked ? [...ids, p.id] : ids.filter(id => id !== p.id))} />{p.title || p.filename}</label>)}</details>
+      <ProjectSearchPicker projects={projects} selectedIds={targetIds} onChange={setTargetIds} />
       <div className="mc-weights">{AXES.map(axis => <label key={axis}>{axis}<input aria-label={`${axis} weight`} type="range" min="0" max="1" step="0.1" value={weights[axis]} onChange={event => setWeights(w => ({ ...w, [axis]: Number(event.target.value) }))} /><span>{weights[axis] === 0 ? 'Off' : `${Math.round(weights[axis] * 100)}%`}</span></label>)}</div>
     </div>
     <div className="mc-index"><div role="status">{targets.some(i => i.status === 'indexing') ? 'Indexing' : 'Visual index'} · {available} / {targets.reduce((n, i) => n + i.total, 0)} frames{targets.some(i => i.failed) ? ' · Some frames failed; resume to retry.' : ''}</div>
