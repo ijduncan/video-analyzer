@@ -79,6 +79,14 @@ Thumbnail extraction now chooses `start + (end - start) / 2`. Legacy invalid end
 
 After both real assets finished analysis, their 51 thumbnails were regenerated locally: 48 for the Half-Life teaser and three for Timeline 4. Their analysis and metadata were preserved, with no additional Gemini calls. The updated teaser thumbnails were visually checked in the full-window workspace.
 
+## Analysis type at the primary action
+
+The Analyze control now includes a native dropdown for Shots and tags or Full analysis. The selected type stays visible, and both controls are disabled while the video is processing. A new saved run revision updates the selected mode and sampling, while ordinary polling preserves unsent choices. The duplicate mode selector in the secondary settings was removed.
+
+The isolated browser fixture captured `flash_only` for Shots and tags and `flash_pro` for Full analysis. Both used the existing request contract. The 390px layout had no horizontal overflow. Production build and lint passed.
+
+A preliminary browser interception rule did not block a real Timeline 4 test request. It was cancelled before any successful processing section or result replacement. The original three shots and completed-result status were retained; its prior cost estimate had been overwritten by the attempted run and is now shown as unavailable. The remaining request checks used an isolated server that captured requests without provider access. Sanitized incident evidence is in ignored `artifacts/qa/cancelled-mode-test.json`.
+
 ## Remaining validation
 
 - Recognition/retrieval quality on representative agency and filmmaking footage, including difficult audio, fast montage and multilingual material.

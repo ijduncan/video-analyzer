@@ -26,6 +26,13 @@
 .vw-header-actions { display: flex; align-items: center; gap: 12px; }
 .lw-video-workspace .vw-header .lw-button { min-height: 42px; font-size: 12px; }
 .lw-video-workspace .lw-analyze-primary { width: auto; min-width: 170px; padding: 11px 18px; font-size: 13px !important; }
+.vw-analyze-control { display: flex; align-items: stretch; border: 1px solid #c4da93; border-radius: 5px; min-width: 0; }
+.vw-analysis-type { display: flex; position: relative; align-items: center; min-width: 0; }
+.vw-analysis-type select { appearance: none; width: 157px; min-width: 0; height: 100%; padding: 10px 32px 10px 13px; background: #2b3427; color: #e0eccb; border: 0; border-radius: 4px 0 0 4px; font: 12px/1.5 inherit; cursor: pointer; }
+.vw-analysis-type select:disabled { opacity: .6; cursor: not-allowed; }
+.vw-analysis-type select:hover:not(:disabled) { background: #35432d; }
+.vw-analysis-type > svg { position: absolute; right: 11px; pointer-events: none; color: #cfdda9; }
+.lw-video-workspace .vw-analyze-control .lw-analyze-primary { min-width: 0; padding: 10px 14px; border: 0 !important; border-radius: 0 4px 4px 0; }
 .lw-video-workspace .lw-export-menu { top: calc(100% + 10px); bottom: auto; left: auto; right: 0; }
 .vw-layout { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); flex: 1; min-height: 0; }
 .vw-viewer { padding: 28px; min-width: 0; overflow-y: auto; }
@@ -118,6 +125,12 @@
   .vw-header h1 { font-size: 15px; }
   .vw-header-actions { grid-column: 1 / -1; width: 100%; }
   .lw-video-workspace .lw-analyze-primary { flex: 1; min-width: 0; }
+  .vw-analyze-control { flex: 1; }
+  .vw-analysis-type { flex: 1; }
+  .vw-analysis-type select { width: 100%; padding-left: 10px; padding-right: 25px; font-size: 11px; }
+  .vw-analysis-type > svg { right: 7px; width: 12px; }
+  .lw-video-workspace .vw-analyze-control .lw-analyze-primary { flex: 0 0 auto; padding: 10px; font-size: 11px !important; }
+  .vw-analyze-control .lw-analyze-primary > svg { display: none; }
   .vw-viewer { padding: 16px; }
   .vw-shot-context > p { font-size: 13px; }
   .lw-video-workspace .lw-inspector-tabs { padding: 0 16px; gap: 26px; }

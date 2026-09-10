@@ -34,6 +34,13 @@ export function AssetInspector({ asset, initialSeconds, initialShot, capabilitie
     const saved = asset.analysis_config?.fps
     return typeof saved === 'number' && Number.isFinite(saved) && saved >= 0.5 && saved <= 5 ? saved : 1
   })
+  const [savedRun, setSavedRun] = useState(asset.analysis_config?.started_at)
+  if (savedRun !== asset.analysis_config?.started_at) {
+    setSavedRun(asset.analysis_config?.started_at)
+    setMode(asset.analysis_config?.mode === 'flash_pro' ? 'flash_pro' : 'flash_only')
+    const savedFps = asset.analysis_config?.fps
+    setFps(typeof savedFps === 'number' && Number.isFinite(savedFps) && savedFps >= 0.5 && savedFps <= 5 ? savedFps : 1)
+  }
   const [prompt, setPrompt] = useState('')
   const [starting, setStarting] = useState(false)
   const [confirmRemoval, setConfirmRemoval] = useState(false)
@@ -113,10 +120,13 @@ export function AssetInspector({ asset, initialSeconds, initialShot, capabilitie
       <h1 title={asset.filename}>{asset.metadata.title || asset.filename}</h1>
       <div className="vw-header-actions">
         <div className="lw-export-wrap"><button className="lw-button" onClick={() => setExporting(!exporting)} aria-expanded={exporting}><Icon name="download" size={16} />Export<Icon name="down" size={12} /></button>{exporting && <div className="lw-export-menu">{(['json', 'csv', 'xmp', 'srt', 'edl', 'fcpxml'] as const).map(format => <button key={format} onClick={() => download(format)}><strong>{format.toUpperCase()}</strong><span>{{ json: 'Metadata', csv: 'Shot list', xmp: 'Sidecar', srt: 'Subtitles', edl: 'Edit list', fcpxml: 'Timeline' }[format]}</span></button>)}</div>}</div>
+      <div className="vw-analyze-control" role="group" aria-label="Start video analysis">
+        <label className="vw-analysis-type"><span className="lw-sr-only">Analysis type</span><select value={mode} disabled={busy || removing || asset.status === 'deleting'} onChange={event => setMode(event.target.value as 'flash_only' | 'flash_pro')}><option value="flash_only">Shots and tags</option><option value="flash_pro">Full analysis</option></select><Icon name="down" size={14} /></label>
       <button className="lw-button lw-button-primary lw-analyze-primary" disabled={busy || removing || asset.status === 'deleting'} onClick={analyze}>
         <Icon name="spark" size={20} />
         {busy ? starting && !isActiveAnalysis(asset.status) ? 'Starting…' : asset.status === 'queued' ? 'Queued…' : 'Analyzing…' : !capabilities?.google_configured && !apiKey ? 'Connect Gemini' : asset.status === 'error' ? 'Retry analysis' : asset.flash ? 'Analyze again' : 'Analyze video'}
       </button>
+      </div>
       </div>
     </header>
     <div className="vw-layout">
@@ -160,7 +170,6 @@ export function AssetInspector({ asset, initialSeconds, initialShot, capabilitie
         {!!asset.deep?.length && <details className="lw-details" open><summary>{usesSections ? 'Sections' : 'Scenes'}<Icon name="down" size={14} /></summary>{asset.deep.map(scene => <details className="lw-details" key={scene.scene_number}><summary>{usesSections ? 'Section' : 'Scene'} {scene.scene_number}<Icon name="down" size={14} /></summary><dl>{Object.entries(scene.visual_analysis || {}).filter(([, value]) => value).map(([key, value]) => <div key={key}><dt>{key.replaceAll('_', ' ')}</dt><dd>{value}</dd></div>)}{scene.narrative_context?.story_beat && <div><dt>Story beat</dt><dd>{scene.narrative_context.story_beat}</dd></div>}{scene.audio_analysis?.dialogue && <div><dt>Dialogue notes</dt><dd>{scene.audio_analysis.dialogue}</dd></div>}</dl></details>)}</details>}
         {!!asset.transcript?.length && <details className="lw-details"><summary>Transcript<Icon name="down" size={14} /></summary>{asset.transcript.map((segment, index) => <button className="lw-transcript-line" key={index} onClick={() => seek(segment.start_seconds ?? timestamp(segment.start_time || '0'))}><time>{segment.start_time || duration(segment.start_seconds)}</time><span>{segment.speaker && <strong>{segment.speaker}: </strong>}{segment.text}</span></button>)}</details>}
         <details className="lw-details vw-analysis-settings" open={!asset.flash}><summary>Analysis settings<Icon name="down" size={14} /></summary><div className="vw-settings-content">
-        <label className="lw-field">Analysis<select value={mode} onChange={event => setMode(event.target.value as 'flash_only' | 'flash_pro')}><option value="flash_only">Shots and tags</option><option value="flash_pro">Full analysis</option></select></label>
         <details className="lw-details"><summary>Options<Icon name="down" size={14} /></summary><div style={{ paddingTop: 14 }}>
           <label className="lw-field">Sampling<select value={fps} onChange={event => setFps(Number(event.target.value))}>{![0.5, 1, 2, 3, 4, 5].includes(fps) && <option value={fps}>{fps} fps</option>}{[0.5, 1, 2, 3, 4, 5].map(value => <option value={value} key={value}>{value} fps{value === 4 ? ' · fast action' : ''}</option>)}</select><span className="lw-field-hint">Higher sampling uses more tokens. Short cuts may be missed.</span></label>
           <label className="lw-field">Instructions<textarea rows={3} value={prompt} onChange={event => setPrompt(event.target.value)} placeholder="Optional analysis instructions" /></label>
