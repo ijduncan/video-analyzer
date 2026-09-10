@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 
 from google.genai import types
 
@@ -21,6 +22,30 @@ from app.services.analysis_support import (
 )
 
 logger = logging.getLogger(__name__)
+REQUEST_TIMEOUT_SECONDS = 90
+
+
+async def _generate(client, *, stage: str, schema, contents):
+    """Bound transport and await time; use an async request for cancellation."""
+    started = time.monotonic()
+    config = {
+        "system_instruction": EVIDENCE_INSTRUCTION,
+        "response_mime_type": "application/json", "response_schema": schema,
+        "max_output_tokens": 16384,
+        "http_options": types.HttpOptions(
+            timeout=int(REQUEST_TIMEOUT_SECONDS * 1000),
+            retry_options=types.HttpRetryOptions(attempts=1),
+        ),
+    }
+    if settings.gemini_analysis_model.startswith("gemini-3."):
+        config["thinking_config"] = types.ThinkingConfig(thinking_level="LOW")
+    try:
+        return await asyncio.wait_for(client.aio.models.generate_content(
+            model=settings.gemini_analysis_model, contents=contents,
+            config=types.GenerateContentConfig(**config),
+        ), timeout=REQUEST_TIMEOUT_SECONDS)
+    finally:
+        logger.info("%s request finished after %.1fs", stage, time.monotonic() - started)
 
 
 async def run_scene_detection(
@@ -39,18 +64,12 @@ async def run_scene_detection(
     client = get_client(api_key)
     video_part = types.Part.from_uri(file_uri=file_uri, mime_type=mime_type)
 
-    response = await asyncio.to_thread(
-        client.models.generate_content,
-        model=settings.gemini_analysis_model,
+    response = await _generate(
+        client, stage="scene_detection", schema=SceneDetectionResult,
         contents=[video_part, SCENE_DETECTION_PROMPT + (
             f"\nSource duration measured by the media probe: {duration_seconds:.6f} seconds."
             if duration_seconds else ""
         )],
-        config=types.GenerateContentConfig(
-            system_instruction=EVIDENCE_INSTRUCTION,
-            response_mime_type="application/json",
-            response_schema=SceneDetectionResult,
-        ),
     )
 
     usage = extract_usage(response, settings.gemini_analysis_model, "scene_detection")
@@ -88,6 +107,13 @@ async def run_shot_detection(
         end_time=scene_outline.end_time,
         shot_number_offset=shot_number_offset,
     )
+    if scene_outline.scene_title.startswith("Section "):
+        prompt += (
+            "\nThis interval is a processing section, not an editorial scene. "
+            "Do not invent a cut at its start or end. A continuous shot may be "
+            "partially visible at either boundary; describe only its visible portion. "
+            "Use absolute ORIGINAL-source timestamps within the provided interval."
+        )
 
     video_part = types.Part(
         file_data=types.FileData(file_uri=file_uri, mime_type=mime_type),
@@ -98,15 +124,9 @@ async def run_shot_detection(
         ),
     )
 
-    response = await asyncio.to_thread(
-        client.models.generate_content,
-        model=settings.gemini_analysis_model,
+    response = await _generate(
+        client, stage="shot_analysis", schema=ShotDetectionResult,
         contents=[video_part, prompt],
-        config=types.GenerateContentConfig(
-            system_instruction=EVIDENCE_INSTRUCTION,
-            response_mime_type="application/json",
-            response_schema=ShotDetectionResult,
-        ),
     )
 
     usage = extract_usage(response, settings.gemini_analysis_model, "shot_analysis")

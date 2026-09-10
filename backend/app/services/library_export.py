@@ -88,6 +88,7 @@ def portable_document(job: Any) -> dict:
         "analysis_history": data.get("analysis_history") or [],
         "provenance": {
             "analysis_config": data.get("analysis_config") or {},
+            "analysis_progress": data.get("analysis_progress") or {},
             "status": data.get("status"),
             "warnings": data.get("warnings") or [],
             "cost_estimate": data.get("cost_estimate"),

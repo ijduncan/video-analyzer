@@ -5,6 +5,7 @@ import type { Shot } from '../../api/types'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { Icon } from './Icon'
 import { bytes, duration, errorMessage, reviewLabel, splitTags, timestamp } from './format'
+import { analysisFacts, analysisStageLabel, isActiveAnalysis } from './analysisProgress'
 
 interface Props {
   asset: AssetDetail
@@ -18,7 +19,7 @@ interface Props {
 }
 
 export function AssetInspector({ asset, initialSeconds, initialShot, capabilities, onClose, onRefresh, onConfigure, onRemoved }: Props) {
-  const [tab, setTab] = useState<'metadata' | 'shots' | 'analysis'>(initialShot ? 'shots' : 'metadata')
+  const [tab, setTab] = useState<'metadata' | 'shots' | 'analysis'>(() => initialShot ? 'shots' : isActiveAnalysis(asset.status) ? 'analysis' : 'metadata')
   const [draft, setDraft] = useState<AssetMetadata>(() => ({ ...asset.metadata }))
   const [baseline, setBaseline] = useState(() => JSON.stringify(asset.metadata))
   const [tags, setTags] = useState(() => asset.metadata.tags.join(', '))
@@ -27,21 +28,31 @@ export function AssetInspector({ asset, initialSeconds, initialShot, capabilitie
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
   const [exporting, setExporting] = useState(false)
-  const [mode, setMode] = useState<'flash_only' | 'flash_pro'>('flash_only')
-  const [fps, setFps] = useState<1 | 4>(1)
+  const [mode, setMode] = useState<'flash_only' | 'flash_pro'>(() => asset.analysis_config?.mode === 'flash_pro' ? 'flash_pro' : 'flash_only')
+  const [fps, setFps] = useState(() => {
+    const saved = asset.analysis_config?.fps
+    return typeof saved === 'number' && Number.isFinite(saved) && saved >= 0.5 && saved <= 5 ? saved : 1
+  })
   const [prompt, setPrompt] = useState('')
   const [starting, setStarting] = useState(false)
   const [confirmRemoval, setConfirmRemoval] = useState(false)
   const [removing, setRemoving] = useState(false)
+  const [previewedShot, setPreviewedShot] = useState(initialShot)
   const apiKey = useSettingsStore(state => state.apiKey)
   const video = useRef<HTMLVideoElement>(null)
   const body = useRef<HTMLDivElement>(null)
-  const busy = ['queued', 'analyzing', 'processing'].includes(asset.status) || starting
+  const busy = isActiveAnalysis(asset.status) || starting
   const removalDisabled = busy || removing || saving || asset.status === 'deleting'
   const warnings = [...new Set([...(asset.warnings || []), ...(asset.flash?.analysis_warnings || [])])]
   const metadata = { ...draft, tags: splitTags(tags), collections: splitTags(collections) }
   const dirty = JSON.stringify(metadata) !== baseline
   const shots = asset.flash?.scenes.flatMap(scene => scene.shots.map(shot => ({ ...shot, scene_title: scene.scene_title }))) || []
+  const progress = (starting && !isActiveAnalysis(asset.status)) || (isActiveAnalysis(asset.status) && asset.analysis_progress?.stage === 'complete') ? null : asset.analysis_progress
+  const retainedShots = shots.length > 0 && (progress?.completed_shots === 0 || (busy && !progress))
+  const stage = starting && !isActiveAnalysis(asset.status) ? 'starting' : progress?.stage || (asset.status === 'queued' ? 'queued' : 'indexing')
+  const stageLabel = analysisStageLabel(stage, asset.analysis_config?.grouping)
+  const usesSections = asset.analysis_config?.grouping === 'processing_sections'
+  const progressFacts = analysisFacts(progress, retainedShots ? 0 : shots.length)
   function field<K extends keyof AssetMetadata>(name: K, value: AssetMetadata[K]) { setDraft(previous => ({ ...previous, [name]: value })) }
   async function save() {
     setSaving(true); setError(''); setNotice('')
@@ -81,6 +92,8 @@ export function AssetInspector({ asset, initialSeconds, initialShot, capabilitie
   function seek(seconds: number) {
     if (video.current) { video.current.currentTime = seconds; video.current.play().catch(() => {}) }
   }
+  function playShot(shot: Shot) { setPreviewedShot(shot.shot_number); seek(timestamp(shot.start_time)) }
+  function showTab(next: 'shots' | 'analysis') { setTab(next); body.current?.scrollTo({ top: 0 }) }
   async function download(format: 'json' | 'csv' | 'xmp' | 'srt' | 'edl' | 'fcpxml') {
     setError('')
     try {
@@ -100,8 +113,9 @@ export function AssetInspector({ asset, initialSeconds, initialShot, capabilitie
     <div className="lw-primary-action">
       <button className="lw-button lw-button-primary lw-analyze-primary" disabled={busy || removing || asset.status === 'deleting'} onClick={analyze}>
         <Icon name="spark" size={20} />
-        {busy ? asset.status === 'queued' ? 'Queued…' : 'Analyzing…' : !capabilities?.google_configured && !apiKey ? 'Connect Gemini' : asset.status === 'error' ? 'Retry analysis' : asset.flash ? 'Analyze again' : 'Analyze video'}
+        {busy ? starting && !isActiveAnalysis(asset.status) ? 'Starting…' : asset.status === 'queued' ? 'Queued…' : 'Analyzing…' : !capabilities?.google_configured && !apiKey ? 'Connect Gemini' : asset.status === 'error' ? 'Retry analysis' : asset.flash ? 'Analyze again' : 'Analyze video'}
       </button>
+      {busy && tab !== 'analysis' && <button className="lw-active-analysis-link" onClick={() => showTab('analysis')}><span>{stageLabel}</span><span>{progressFacts.summary}<Icon name="arrow" size={13} /></span></button>}
     </div>
     <div className="lw-inspector-tabs" role="tablist" aria-label="Asset information">{(['metadata', 'shots', 'analysis'] as const).map(value => <button id={`asset-tab-${value}`} aria-controls={`asset-panel-${value}`} role="tab" tabIndex={tab === value ? 0 : -1} onKeyDown={event => { const items = ['metadata', 'shots', 'analysis'] as const; const current = items.indexOf(tab); const next = event.key === 'ArrowRight' ? (current + 1) % items.length : event.key === 'ArrowLeft' ? (current + items.length - 1) % items.length : event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : -1; if (next >= 0) { event.preventDefault(); setTab(items[next]); document.getElementById(`asset-tab-${items[next]}`)?.focus() } }} aria-selected={tab === value} onClick={() => setTab(value)} key={value}>{value === 'shots' ? 'Shots' : value === 'analysis' ? 'Analysis' : 'Metadata'}</button>)}</div>
     <div ref={body} className="lw-inspector-body" role="tabpanel" id={`asset-panel-${tab}`} aria-labelledby={`asset-tab-${tab}`}>
@@ -122,27 +136,57 @@ export function AssetInspector({ asset, initialSeconds, initialShot, capabilitie
         <details className="lw-details"><summary>File details<Icon name="down" size={14} /></summary><dl><div><dt>Filename</dt><dd>{asset.filename}</dd></div><div><dt>Duration</dt><dd>{duration(asset.technical.duration_seconds)}</dd></div><div><dt>Size</dt><dd>{bytes(asset.size_bytes)}</dd></div>{asset.technical.width != null && <div><dt>Resolution</dt><dd>{asset.technical.width} × {asset.technical.height}</dd></div>}{asset.technical.frame_rate != null && <div><dt>Frame rate</dt><dd>{Number(asset.technical.frame_rate).toFixed(2).replace(/\.00$/, '')} fps</dd></div>}<div><dt>Format</dt><dd>{asset.mime_type || 'Unknown'}</dd></div><div><dt>Codec</dt><dd>{asset.technical.codec || 'Unknown'}</dd></div><div><dt>Source timecode</dt><dd>{asset.technical.source_timecode || 'Not embedded'}</dd></div><div><dt>Audio</dt><dd>{asset.technical.has_audio == null ? 'Unknown' : asset.technical.has_audio ? 'Present' : 'No audio track'}</dd></div><div><dt>Imported</dt><dd>{asset.created_at ? new Date(asset.created_at).toLocaleDateString() : 'Unknown'}</dd></div></dl><div className="lw-remove-section">{confirmRemoval ? <div className="lw-remove-confirm" role="group" aria-label="Confirm asset removal"><strong>Remove this asset?</strong><p>Permanently removes the uploaded copy, metadata, thumbnails and analysis from this workspace. Your source file outside this workspace stays in place.</p><div><button className="lw-button" disabled={removing} onClick={() => setConfirmRemoval(false)}>Cancel</button><button className="lw-button lw-button-danger" disabled={removalDisabled} onClick={remove}>{removing ? 'Removing…' : 'Remove asset'}</button></div></div> : <button className="lw-text-button lw-remove-link" disabled={removalDisabled} onClick={() => setConfirmRemoval(true)}>Remove asset</button>}{busy && <small>Finish or cancel analysis before removing.</small>}</div></details>
       </>}
       {tab === 'shots' && <>
-        {shots.length ? shots.map(shot => <ShotEditor key={`${shot.shot_number}-${shot.start_time}-${shot.end_time}`} jobId={asset.job_id} shot={shot} annotation={asset.shot_annotations?.[String(shot.shot_number)]} selected={shot.shot_number === initialShot} onSeek={() => seek(timestamp(shot.start_time))} onRefresh={onRefresh} />) : <div className="lw-panel-empty"><p>No shots yet.</p></div>}
+        {retainedShots && <p className="lw-live-result-note">{busy ? 'Previous analysis is shown until this run returns shots.' : 'Previous analysis retained.'}</p>}
+        {shots.length ? shots.map(shot => <ShotEditor key={`${shot.shot_number}-${shot.start_time}-${shot.end_time}`} jobId={asset.job_id} shot={shot} annotation={asset.shot_annotations?.[String(shot.shot_number)]} selected={shot.shot_number === previewedShot} onSeek={() => playShot(shot)} onRefresh={onRefresh} />) : <div className="lw-panel-empty"><p>{busy ? 'Shots appear as each section finishes.' : 'No shots yet.'}</p></div>}
       </>}
       {tab === 'analysis' && <>
-        {busy && <div className="lw-analysis-progress" role="status"><div className="lw-progress-orbit" /><div><strong>{asset.status === 'queued' ? 'Queued' : 'Analyzing…'}</strong>{asset.progress && <p>{typeof asset.progress === 'string' ? asset.progress : asset.progress.message}</p>}</div></div>}
+        {busy && <div className="lw-analysis-progress" role="status" aria-live="polite" aria-atomic="true"><div className="lw-progress-orbit" /><div><strong>{stageLabel}</strong><p>{progressFacts.summary}</p>{progressFacts.coverage && <small>{progressFacts.coverage}</small>}</div></div>}
         {asset.error && <div className="lw-inline-error">{asset.error}</div>}
-        {busy && <button className="lw-text-button lw-cancel-analysis" onClick={cancel}>Cancel analysis</button>}
+        {busy && <button className="lw-text-button lw-cancel-analysis" onClick={cancel} disabled={starting}>Cancel analysis</button>}
+        {(busy || shots.length > 0 || asset.status === 'complete' || asset.status === 'error') && <LiveShotResults shots={shots} retained={retainedShots} busy={busy} stage={stage} completedSections={progress?.completed_sections || 0} failed={asset.status === 'error'} selected={previewedShot} canPreview={!!asset.preview_url} onPlay={playShot} onAll={() => showTab('shots')} />}
         <label className="lw-field">Analysis<select value={mode} onChange={event => setMode(event.target.value as 'flash_only' | 'flash_pro')}><option value="flash_only">Shots and tags</option><option value="flash_pro">Full analysis</option></select></label>
         <details className="lw-details"><summary>Options<Icon name="down" size={14} /></summary><div style={{ paddingTop: 14 }}>
-          <label className="lw-field">Sampling<select value={fps} onChange={event => setFps(Number(event.target.value) as 1 | 4)}><option value={1}>1 fps</option><option value={4}>4 fps · fast action</option></select><span className="lw-field-hint">Higher sampling uses more tokens. Short cuts may be missed.</span></label>
+          <label className="lw-field">Sampling<select value={fps} onChange={event => setFps(Number(event.target.value))}>{![0.5, 1, 2, 3, 4, 5].includes(fps) && <option value={fps}>{fps} fps</option>}{[0.5, 1, 2, 3, 4, 5].map(value => <option value={value} key={value}>{value} fps{value === 4 ? ' · fast action' : ''}</option>)}</select><span className="lw-field-hint">Higher sampling uses more tokens. Short cuts may be missed.</span></label>
           <label className="lw-field">Instructions<textarea rows={3} value={prompt} onChange={event => setPrompt(event.target.value)} placeholder="Optional analysis instructions" /></label>
           <p className="lw-model-note">{capabilities?.models ? `${capabilities.models.analysis}${mode === 'flash_pro' ? ` + ${capabilities.models.deep}` : ''}` : 'Gemini'}</p>
         </div></details>
         <p className="lw-model-note">Gemini API charges apply.</p>
         {asset.analysis_config?.analysis_model && <details className="lw-details"><summary>Run details<Icon name="down" size={14} /></summary><dl><div><dt>Index model</dt><dd>{asset.analysis_config.analysis_model}</dd></div>{asset.analysis_config.mode === 'flash_pro' && <div><dt>Creative model</dt><dd>{asset.analysis_config.deep_model}</dd></div>}<div><dt>Sampling</dt><dd>{asset.analysis_config.fps} frame(s) per second</dd></div><div><dt>Schema</dt><dd>{asset.flash?.schema_version || 'Legacy'}</dd></div><div><dt>Started</dt><dd>{asset.analysis_config.started_at ? new Date(asset.analysis_config.started_at).toLocaleString() : 'Not recorded'}</dd></div><div><dt>Timestamp precision</dt><dd>Approximate · verify against source before editing</dd></div>{asset.cost_estimate && <div><dt>Estimated API cost</dt><dd>{asset.cost_estimate.estimated_cost_usd == null ? 'Unavailable for this model or usage record' : `$${asset.cost_estimate.estimated_cost_usd.toFixed(4)} USD`}</dd></div>}</dl>{asset.cost_estimate?.warnings?.map(warning => <p className="lw-model-note" key={warning}>{warning}</p>)}</details>}
         {asset.video_summary && <details className="lw-details"><summary>Summary<Icon name="down" size={14} /></summary><p className="lw-panel-description">{asset.video_summary.executive_summary}</p><dl><div><dt>Visual style</dt><dd>{asset.video_summary.visual_style}</dd></div><div><dt>Audience</dt><dd>{asset.video_summary.target_audience}</dd></div></dl></details>}
-        {!!asset.deep?.length && <details className="lw-details"><summary>Scenes<Icon name="down" size={14} /></summary>{asset.deep.map(scene => <details className="lw-details" key={scene.scene_number}><summary>Scene {scene.scene_number}<Icon name="down" size={14} /></summary><dl>{Object.entries(scene.visual_analysis || {}).filter(([, value]) => value).map(([key, value]) => <div key={key}><dt>{key.replaceAll('_', ' ')}</dt><dd>{value}</dd></div>)}{scene.narrative_context?.story_beat && <div><dt>Story beat</dt><dd>{scene.narrative_context.story_beat}</dd></div>}{scene.audio_analysis?.dialogue && <div><dt>Dialogue notes</dt><dd>{scene.audio_analysis.dialogue}</dd></div>}</dl></details>)}</details>}
+        {!!asset.deep?.length && <details className="lw-details"><summary>{usesSections ? 'Sections' : 'Scenes'}<Icon name="down" size={14} /></summary>{asset.deep.map(scene => <details className="lw-details" key={scene.scene_number}><summary>{usesSections ? 'Section' : 'Scene'} {scene.scene_number}<Icon name="down" size={14} /></summary><dl>{Object.entries(scene.visual_analysis || {}).filter(([, value]) => value).map(([key, value]) => <div key={key}><dt>{key.replaceAll('_', ' ')}</dt><dd>{value}</dd></div>)}{scene.narrative_context?.story_beat && <div><dt>Story beat</dt><dd>{scene.narrative_context.story_beat}</dd></div>}{scene.audio_analysis?.dialogue && <div><dt>Dialogue notes</dt><dd>{scene.audio_analysis.dialogue}</dd></div>}</dl></details>)}</details>}
         {!!asset.transcript?.length && <details className="lw-details"><summary>Transcript<Icon name="down" size={14} /></summary>{asset.transcript.map((segment, index) => <button className="lw-transcript-line" key={index} onClick={() => seek(segment.start_seconds ?? timestamp(segment.start_time || '0'))}><time>{segment.start_time || duration(segment.start_seconds)}</time><span>{segment.speaker && <strong>{segment.speaker}: </strong>}{segment.text}</span></button>)}</details>}
       </>}
     </div>
     <div className="lw-inspector-footer"><div className="lw-export-wrap"><button className="lw-button" onClick={() => setExporting(!exporting)} aria-expanded={exporting}><Icon name="download" size={16} />Export<Icon name="down" size={12} /></button>{exporting && <div className="lw-export-menu">{(['json', 'csv', 'xmp', 'srt', 'edl', 'fcpxml'] as const).map(format => <button key={format} onClick={() => download(format)}><strong>{format.toUpperCase()}</strong><span>{{ json: 'Metadata', csv: 'Shot list', xmp: 'Sidecar', srt: 'Subtitles', edl: 'Edit list', fcpxml: 'Timeline' }[format]}</span></button>)}</div>}</div>{tab === 'metadata' ? <button className="lw-button lw-button-primary" disabled={!dirty || saving || removing} onClick={save}>{saving ? 'Saving…' : dirty ? 'Save' : 'Saved'}<Icon name="check" size={15} /></button> : <button className="lw-button" onClick={() => setTab('metadata')}>Metadata<Icon name="arrow" size={15} /></button>}</div>
   </aside>
+}
+
+function LiveShotResults({ shots, retained, busy, stage, completedSections, failed, selected, canPreview, onPlay, onAll }: {
+  shots: (Shot & { scene_title: string })[]
+  retained: boolean
+  busy: boolean
+  stage: string
+  completedSections: number
+  failed: boolean
+  selected?: number
+  canPreview: boolean
+  onPlay: (shot: Shot) => void
+  onAll: () => void
+}) {
+  const latest = shots.slice(-3).reverse()
+  const heading = retained ? 'Previous shots' : failed ? 'Saved partial shots' : busy ? 'Latest shots' : 'Shots'
+  const emptyMessage = !busy ? (failed ? 'No shots were saved.' : 'No shots found.')
+    : stage === 'queued' ? 'Waiting to start.'
+      : stage === 'uploading' ? 'Preparing video for analysis.'
+        : completedSections > 0 ? 'No shots found in completed sections yet.' : 'Waiting for the first analyzed section.'
+  return <section className="lw-live-results" aria-label="Available analysis shots">
+    <div className="lw-live-results-heading"><h3>{heading}</h3>{shots.length > 0 && <button className="lw-text-button" onClick={onAll}>All shots<Icon name="arrow" size={13} /></button>}</div>
+    {retained && <p className="lw-live-result-note">{busy ? 'Previous analysis is shown until this run returns shots.' : 'Previous analysis retained.'}</p>}
+    {latest.length > 0 ? <div className="lw-live-shot-list">{latest.map(shot => <button className={`lw-live-shot ${selected === shot.shot_number ? 'is-selected' : ''}`} key={`${shot.shot_number}-${shot.start_time}-${shot.end_time}`} onClick={() => onPlay(shot)} disabled={!canPreview} aria-label={`Play shot ${shot.shot_number} at ${shot.start_time}`} title={canPreview ? undefined : 'Video preview unavailable'}>
+      <span className="lw-live-shot-image">{shot.thumbnail_url ? <img src={shot.thumbnail_url} alt="" loading="lazy" /> : <Icon name="play" size={17} />}</span>
+      <span className="lw-live-shot-copy"><span className="lw-live-shot-title"><strong>Shot {shot.shot_number}</strong><time>{shot.start_time}–{shot.end_time}</time></span><span className="lw-live-shot-description">{shot.visual_description || shot.scene_title}</span></span>
+    </button>)}</div> : <p className="lw-live-result-note" role="status">{emptyMessage}</p>}
+  </section>
 }
 
 function ShotEditor({ jobId, shot, annotation, selected, onSeek, onRefresh }: {
@@ -162,7 +206,7 @@ function ShotEditor({ jobId, shot, annotation, selected, onSeek, onRefresh }: {
   const [error, setError] = useState('')
   async function save() {
     setSaving(true); setMessage(''); setError('')
-    try { await saveShot(jobId, shot.shot_number, { tags: splitTags(tags), notes, review_status: review }); setMessage('Saved.'); onRefresh() }
+    try { await saveShot(jobId, shot.shot_number, { tags: splitTags(tags), notes, review_status: review }, { start_time: shot.start_time, end_time: shot.end_time }); setMessage('Saved.'); onRefresh() }
     catch (err) { setError(errorMessage(err)) } finally { setSaving(false) }
   }
   return <div className={`lw-shot-detail ${selected ? 'is-selected' : ''}`}>

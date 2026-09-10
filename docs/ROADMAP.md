@@ -6,6 +6,8 @@ The existing per-video analyzer has become a local footage library. It supports 
 
 This is a usable single-user foundation. Its current search is keyword based, job execution is in-process, and the AI adapter has not been evaluated against this workspace's footage. The following work defines the path to an agency production service.
 
+Progressive indexing now publishes shots and thumbnails after each 30-second processing section, with durable successful-section coverage and partial-result review. [Measured synthetic latency and remaining limits](PROGRESSIVE_ANALYSIS.md) include proxy ingestion, checkpoint-only retry, cross-section stitching, and bounded parallel processing.
+
 ## Next: benchmark recognition and retrieval
 
 A valid Gemini project has passed a live synthetic smoke test of both presets. Next, run representative rights-cleared agency and filmmaking clips through every preset. Inspect the raw provider response, validate timestamps, compare visual text/logos/actions to source frames, inspect billable usage, and verify handling of long clips, silence, provider timeout and quota errors. A model being documented as available is not sufficient evidence that the user's key has access.

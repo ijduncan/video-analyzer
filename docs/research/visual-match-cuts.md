@@ -56,7 +56,7 @@ The low-resolution visual frame floor is 66 tokens/frame. Removing audio therefo
 ## Limits of the current application
 
 - The current related-shot pass returns up to 20 model-suggested pairs within one film. It does not implement the geometric, motion, embedding, or cross-library index proposed here.
-- Full analysis sends the video through scene detection, shot analysis, deep analysis, summary, and related-shot matching: roughly five whole-film equivalents at 1 fps, before custom analysis. The one-pass estimates above are not the cost of that entire pipeline.
+- Shot indexing now publishes results in 30-second processing sections, skipping the initial whole-film scene-detection request when source duration is known. Full analysis still adds detailed section passes, whole-video summary and related-shot matching. The one-pass estimates above are not the cost of that entire pipeline. See [progressive analysis](../PROGRESSIVE_ANALYSIS.md) for measured first-result latency and remaining limits.
 - Chunking is necessary for a detailed film index. Gemini 3.8 Flash allows 1,048,576 input tokens and 65,536 output tokens: default-low 120-minute input can fit, but the illustrative per-shot output cannot fit one response, and a 4 fps input also exceeds the input limit. [Model limits](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash)
 - Validate quality and invoices on a small representative film set before scaling. Measure shot coverage, boundary error, visual retrieval relevance, editor acceptance of transitions, and cost per accepted match. The existing synthetic provider smoke verifies API compatibility, not these editorial outcomes.
 

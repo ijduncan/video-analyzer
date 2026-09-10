@@ -13,6 +13,13 @@ _tasks: dict[str, asyncio.Task] = {}
 _gate: asyncio.Semaphore | None = None
 
 
+def _stage(job_id, stage, **changes):
+    job = get_job(job_id)
+    if job is not None:
+        update_job(job_id, analysis_progress={**job.analysis_progress, 'stage': stage,
+                   'updated_at': datetime.now(timezone.utc).isoformat()}, **changes)
+
+
 async def _run(job_id, request, api_key):
     global _gate
     if _gate is None:
@@ -22,20 +29,17 @@ async def _run(job_id, request, api_key):
             job = get_job(job_id)
             if job is None:
                 return
-            update_job(job_id, status='analyzing', error=None, warnings=[])
+            _stage(job_id, 'uploading', status='analyzing', error=None, warnings=[],
+                   progress='Preparing video for analysis')
             await ensure_remote_file(job, api_key)
             job = get_job(job_id)
             async for event in run_analysis(job, request.fps, request.mode,
                     custom_prompt=request.custom_prompt.strip() or None, api_key=api_key):
                 data = json.loads(event.get('data', '{}'))
                 kind = event.get('event')
-                if kind == 'pass_start':
-                    update_job(job_id, progress=data.get('name', 'Analyzing'))
-                elif kind == 'scene_start':
-                    update_job(job_id, progress=f"Analyzing scene {data.get('scene')} of {data.get('total')}")
-                elif kind == 'shot_detection_progress':
-                    update_job(job_id, progress=f"Logging shots: scene {data.get('scene')} of {data.get('total')}")
-                elif kind == 'analysis_complete':
+                # The analyzer owns section-level progress; do not overwrite it with
+                # generic pass labels as soon as it yields a checkpoint event.
+                if kind == 'analysis_complete':
                     update_job(job_id, progress='Analysis complete; ready for review')
                 elif kind == 'error_event' and data.get('recoverable'):
                     latest = get_job(job_id)
@@ -43,13 +47,13 @@ async def _run(job_id, request, api_key):
                     if latest and warning not in latest.warnings:
                         update_job(job_id, warnings=latest.warnings + [warning])
     except asyncio.CancelledError:
-        update_job(job_id, status='error', error='Analysis cancelled. Previous results preserved.', progress='Cancelled')
+        _stage(job_id, 'cancelled', status='error', error='Analysis cancelled. Completed sections preserved.', progress='Cancelled')
         raise
     except Exception as exc:
         logger.warning('Analysis job failed (%s)', type(exc).__name__)
         # Avoid including provider exception payloads, which can contain URLs/credentials.
-        message = str(exc) if isinstance(exc, ValueError) else f'Analysis failed ({type(exc).__name__}). Check provider access and retry.'
-        update_job(job_id, status='error', error=message, progress='Analysis failed')
+        message = 'Video preparation failed. Check the source file, provider access and quota, then retry.'
+        _stage(job_id, 'error', status='error', error=message, progress='Analysis failed; completed sections preserved')
 
 
 def _finished(job_id, task):
@@ -61,8 +65,8 @@ def _finished(job_id, task):
     _tasks.pop(job_id, None)
     if task.cancelled():
         job = get_job(job_id)
-        if job and job.status in ('queued', 'analyzing'):
-            update_job(job_id, status='error', error='Analysis cancelled. Previous results preserved.', progress='Cancelled')
+        if job and job.status in ('queued', 'analyzing', 'processing'):
+            _stage(job_id, 'cancelled', status='error', error='Analysis cancelled. Completed sections preserved.', progress='Cancelled')
     elif task.exception() is not None:
         logger.warning('Analysis task ended unexpectedly (%s)', type(task.exception()).__name__)
 

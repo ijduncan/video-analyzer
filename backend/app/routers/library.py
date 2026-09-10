@@ -59,6 +59,7 @@ async def library(q: str = Query(default='', max_length=500), project: str = '',
     else:
         matched.sort(key=lambda item: item[0], reverse=True)
     return {'assets': [v for _, v in matched[offset:offset + limit]], 'total': len(matched),
+        'active_jobs': sum(j.status in ('queued', 'analyzing', 'processing') for j in jobs),
         'facets': {'projects': sorted({j.metadata.get('project') for j in jobs if j.metadata.get('project')}),
                    'tags': sorted({tag for j in jobs for tag in j.metadata.get('tags', [])}),
                    'collections': sorted({v for j in jobs for v in j.metadata.get('collections', [])})},
@@ -72,7 +73,8 @@ async def search_shots(q: str = Query(default='', max_length=500), project: str 
                        tag: str = '', rights_status: str = '', collection: str = '',
                        limit: int = Query(default=200, ge=1, le=500), offset: int = Query(default=0, ge=0)):
     matches = []
-    for job in _filtered(list_jobs(), project=project, rights_status=rights_status, collection=collection):
+    jobs = list_jobs()
+    for job in _filtered(jobs, project=project, rights_status=rights_status, collection=collection):
         for shot in shot_views(job):
             if review_status and shot['review_status'] != review_status:
                 continue
@@ -82,7 +84,8 @@ async def search_shots(q: str = Query(default='', max_length=500), project: str 
             if score >= 0:
                 matches.append((score, shot))
     matches.sort(key=lambda item: item[0], reverse=True)
-    return {'shots': [s for _, s in matches[offset:offset + limit]], 'total': len(matches), 'search_type': 'keyword'}
+    return {'shots': [s for _, s in matches[offset:offset + limit]], 'total': len(matches), 'search_type': 'keyword',
+            'active_jobs': sum(j.status in ('queued', 'analyzing', 'processing') for j in jobs)}
 
 
 @router.get('/{job_id}')
@@ -98,9 +101,17 @@ async def edit_asset(job_id: str, metadata: AssetMetadata):
 
 
 @router.patch('/{job_id}/shots/{shot_number}')
-async def edit_shot(job_id: str, shot_number: int, annotation: ShotAnnotation):
+async def edit_shot(job_id: str, shot_number: int, annotation: ShotAnnotation,
+                    expected_start_time: str | None = Query(default=None, max_length=100),
+                    expected_end_time: str | None = Query(default=None, max_length=100)):
     job = require_job(job_id)
-    if not any(s['shot_number'] == shot_number for s in shot_views(job)):
+    shot = next((s for s in shot_views(job) if s['shot_number'] == shot_number), None)
+    guarded = expected_start_time is not None or expected_end_time is not None
+    if guarded and (shot is None
+                    or (expected_start_time is not None and expected_start_time != shot.get('start_time'))
+                    or (expected_end_time is not None and expected_end_time != shot.get('end_time'))):
+        raise HTTPException(409, 'This shot changed during analysis. Reload the shot before saving your edits.')
+    if shot is None:
         raise HTTPException(404, 'Shot not found')
     key = str(shot_number)
     merged = {**job.shot_annotations.get(key, {}), **annotation.model_dump(exclude_unset=True)}

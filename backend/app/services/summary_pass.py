@@ -33,6 +33,7 @@ async def run_summary_pass(
         model=settings.gemini_deep_model,
         contents=[video_part, context],
         config=types.GenerateContentConfig(
+            http_options=types.HttpOptions(timeout=120_000, retry_options=types.HttpRetryOptions(attempts=1)),
             system_instruction=EVIDENCE_INSTRUCTION,
             response_mime_type="application/json",
             response_schema=VideoSummary,

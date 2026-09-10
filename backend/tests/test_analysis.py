@@ -116,18 +116,20 @@ class AnalysisProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_clip_offsets_retain_fractional_seconds_and_configured_model(self):
         item = shot(start="00:12.375", end="00:13.625")
         fake = Mock()
-        fake.models.generate_content.return_value = SimpleNamespace(
+        fake.aio.models.generate_content = AsyncMock(return_value=SimpleNamespace(
             text=json.dumps({"shots": [item.model_dump()]}), usage_metadata=None, candidates=[],
-        )
+        ))
         outline = SceneOutline(scene_number=1, scene_title="Cup", scene_description="Cup",
                                start_time=item.start_time, end_time=item.end_time)
         with patch("app.services.flash_pass.get_client", return_value=fake), \
              patch.object(settings, "gemini_analysis_model", "selected-model"):
             result, _ = await run_shot_detection("uri", "video/mp4", outline, 3, 2)
-        request = fake.models.generate_content.call_args.kwargs
+        request = fake.aio.models.generate_content.call_args.kwargs
         self.assertEqual(request["model"], "selected-model")
         self.assertEqual(request["contents"][0].video_metadata.start_offset, "12.375s")
         self.assertEqual(request["contents"][0].video_metadata.end_offset, "13.625s")
+        self.assertEqual(request["config"].http_options.timeout, 90000)
+        self.assertEqual(request["config"].http_options.retry_options.attempts, 1)
         self.assertEqual(result[0].shot_number, 3)
 
 

@@ -1,4 +1,4 @@
-# FRAME / Video Analyzer
+# Video Analyzer
 
 An agency-first footage library with Gemini video analysis, editable shot metadata, and portable editorial handoffs. Built for finding and reusing footage across client projects, with a deeper analysis workspace for filmmakers.
 
@@ -7,7 +7,7 @@ An agency-first footage library with Gemini video analysis, editable shot metada
 - **Persistent library:** SQLite stores assets, analysis results, annotations, project/client/campaign data, collections, rights status, and review decisions across restarts.
 - **Local-first import:** import multiple videos without an AI key; ffprobe reads source duration, resolution, codec, frame rate, audio presence and embedded timecode. ffmpeg produces actual footage posters and shot thumbnails.
 - **Footage discovery:** search filenames, human metadata and AI descriptions across the library or individual shots. Search is currently keyword matching, with project, review, tag and rights filters; it is not a vector/semantic search engine.
-- **Evidence-bearing analysis:** Gemini proposes scenes, shots, subjects, actions, visible text, logos, location, cinematography and timestamped evidence. Human tags/notes are separate from model suggestions. The full preset adds scene insights, summary and related shots; a custom brief adds targeted analysis.
+- **Progressive analysis:** known-duration videos are indexed in 30-second processing sections. Shots and thumbnails appear as each section finishes, with successful section counts and source time processed. These section edges are not claimed to be editorial cuts. Gemini proposes shots, subjects, actions, visible text, logos, location, cinematography and timestamped evidence. Human tags/notes remain separate. The full preset adds detailed notes, summary and related shots afterward.
 - **Background processing:** analysis continues when a library tab closes, progress and completed stages persist, duplicate runs are rejected, and interrupted runs are identified on restart. Retry is explicit; a restart does not automatically resume external model calls.
 - **Editorial review:** preview source footage, seek to a matched shot, edit tags and notes, record rights and review status, and distinguish approximate AI timestamps from source technical facts.
 - **Portable exports:** JSON, UTF-8 CSV, XMP with timed markers, transcript SRT, and guarded EDL/FCPXML reference exports. Source media remains unchanged.
@@ -75,13 +75,15 @@ Open [the Docker workspace](http://localhost:5173). Compose binds to loopback an
 | Upload limit | 2,000 MiB per file; configurable via `MAX_FILE_SIZE_MB` |
 | Analysis concurrency | Two jobs; configurable via `MAX_CONCURRENT_ANALYSES` |
 | Google file retention | Expiring provider references are refreshed from local originals before analysis |
-| Results | Durable after each completed stage; partial failures appear as warnings |
+| Results | Durable after each processing section; partial shots are searchable and reviewable during analysis. Failed sections retain successful results and report incomplete coverage. |
 
 `DATABASE_PATH` and `UPLOAD_DIR` can override storage locations. Back up both the database and originals; exports do not package video files. YouTube references support analysis but do not provide local technical metadata or a native preview; use a local original for reliable editorial handoffs.
 
 ## Accuracy and export boundaries
 
 AI scene/shot boundaries are **approximate**. Sampling can miss short edits; decimal timestamps do not imply frame accuracy. Model confidence is an uncalibrated estimate, and visible branding does not establish usage rights. Speech text is model transcription with shot-level timing, not a verified word-aligned transcript. SRT export fails clearly when no actual timed transcript exists; it never turns shot descriptions into subtitles.
+
+Progressive indexing still waits for Google's upload processing before the first section. Shots crossing processing boundaries may be split and are flagged for review. Retry currently reprocesses the run; it does not skip successful sections. See [progressive analysis](docs/PROGRESSIVE_ANALYSIS.md) for behavior and measured latency.
 
 EDL/FCPXML exports require verified source frame rate and embedded source timecode. Fractional/drop-frame sources are deliberately rejected by the current adapter. FCPXML also needs valid source dimensions and references the original filename relative to the exported XML; put the original beside the XML or relink in the editor. Generated structures are tested, but import/round-trip behavior in Premiere, Resolve and Final Cut Pro has not been tested in installed editors.
 

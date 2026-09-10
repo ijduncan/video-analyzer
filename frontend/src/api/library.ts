@@ -41,6 +41,7 @@ export interface LibraryAsset {
 export interface LibraryResponse {
   assets: LibraryAsset[]
   total: number
+  active_jobs?: number
   facets: { projects: string[]; tags: string[]; collections?: string[] }
   stats: { assets: number; shots: number; reviewed: number; duration_seconds: number }
 }
@@ -49,6 +50,16 @@ export interface ShotAnnotation {
   notes: string
   review_status: ReviewStatus
 }
+export interface AnalysisProgress {
+  stage?: string | null
+  completed_sections?: number | null
+  total_sections?: number | null
+  failed_sections?: number | null
+  completed_shots?: number | null
+  processed_seconds?: number | null
+  total_seconds?: number | null
+  updated_at?: string | null
+}
 export interface AssetDetail extends LibraryAsset {
   flash: FlashAnalysis | null
   deep: SceneDeepAnalysis[] | null
@@ -56,9 +67,10 @@ export interface AssetDetail extends LibraryAsset {
   custom_result: Record<string, unknown> | null
   shot_annotations: Record<string, ShotAnnotation>
   progress?: { message?: string; pass?: number; scene?: number; total?: number } | string | null
+  analysis_progress?: AnalysisProgress | null
   error?: string | null
   warnings?: string[]
-  analysis_config?: { provider?: string; analysis_model?: string; deep_model?: string; fps?: number; mode?: string; started_at?: string; timestamp_accuracy?: string }
+  analysis_config?: { provider?: string; analysis_model?: string; deep_model?: string; fps?: number; mode?: string; started_at?: string; timestamp_accuracy?: string; grouping?: string }
   cost_estimate?: { estimated_cost_usd: number | null; pricing_status?: string; pricing_as_of?: string; warnings?: string[]; total_input_tokens?: number; total_output_tokens?: number } | null
   transcript: { start_time?: string; end_time?: string; start_seconds?: number; text?: string; speaker?: string }[]
 }
@@ -113,12 +125,13 @@ export function saveMetadata(id: string, metadata: Partial<AssetMetadata>) {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(metadata),
   })
 }
-export function saveShot(id: string, number: number, annotation: ShotAnnotation) {
-  return request<ShotAnnotation>(`/api/library/${encodeURIComponent(id)}/shots/${number}`, {
+export function saveShot(id: string, number: number, annotation: ShotAnnotation, expectedRange: { start_time: string; end_time: string }) {
+  const params = new URLSearchParams({ expected_start_time: expectedRange.start_time, expected_end_time: expectedRange.end_time })
+  return request<ShotAnnotation>(`/api/library/${encodeURIComponent(id)}/shots/${number}?${params}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(annotation),
   })
 }
-export function analyzeAsset(id: string, mode: 'flash_only' | 'flash_pro', fps: 1 | 4, customPrompt: string) {
+export function analyzeAsset(id: string, mode: 'flash_only' | 'flash_pro', fps: number, customPrompt: string) {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   const apiKey = getApiKey()
   if (apiKey) headers['X-API-Key'] = apiKey

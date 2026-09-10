@@ -1,4 +1,5 @@
 import os
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -11,6 +12,13 @@ from app.config import settings
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    app_logger = logging.getLogger('app')
+    if not app_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s %(message)s'))
+        app_logger.addHandler(handler)
+    app_logger.setLevel(logging.INFO)
+    app_logger.propagate = False
     os.makedirs(settings.upload_dir, exist_ok=True)
     from app.services.job_store import recover_interrupted_jobs
     from app.services.job_runner import shutdown_jobs

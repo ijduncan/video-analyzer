@@ -1,7 +1,9 @@
 """Searchable public asset views, separate from private storage/provider fields."""
 import json
 import re
+from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 from app.config import settings
 from app.models.library import AssetMetadata
 
@@ -14,6 +16,22 @@ def seconds(value: str) -> float:
         return total
     except ValueError:
         return 0.0
+
+
+def thumbnail_url(job, number):
+    thumb = Path(settings.upload_dir) / job.job_id / 'thumbs' / f'shot_{number}.jpg'
+    if not thumb.is_file():
+        return None
+    started = job.analysis_config.get('started_at')
+    if started:
+        try:
+            # A stale file must never illustrate a different interval during reanalysis.
+            if thumb.stat().st_mtime < datetime.fromisoformat(started).timestamp():
+                return None
+        except (ValueError, TypeError, OSError):
+            return None
+    version = quote(str(started or thumb.stat().st_mtime_ns), safe='')
+    return f'/api/thumbnails/{job.job_id}/{number}?v={version}'
 
 
 def asset_view(job, detail=False):
@@ -31,6 +49,7 @@ def asset_view(job, detail=False):
         'thumbnail_url': f'/api/library/{job.job_id}/poster' if poster.is_file() else None,
         'preview_url': f'/api/library/{job.job_id}/media' if job.local_path else None,
         'progress': job.progress, 'error': job.error, 'warnings': job.warnings,
+        'analysis_progress': job.analysis_progress,
     }
     if detail:
         view.update(flash=job.flash_result, deep=job.deep_results, video_summary=job.summary,
@@ -38,6 +57,12 @@ def asset_view(job, detail=False):
                     analysis_config=job.analysis_config, shot_annotations=job.shot_annotations,
                     transcript=job.transcript, cost_estimate=job.cost_estimate)
         view['analysis_history'] = job.analysis_history
+        if job.flash_result:
+            view['flash'] = {**job.flash_result, 'scenes': [
+                {**scene, 'shots': [{**shot, 'thumbnail_url': thumbnail_url(job, shot.get('shot_number', 0))}
+                                    for shot in scene.get('shots', [])]}
+                for scene in job.flash_result.get('scenes', [])
+            ]}
     return view
 
 
@@ -61,7 +86,6 @@ def shot_views(job):
         for shot in scene.get('shots', []):
             number = shot.get('shot_number', 0)
             annotation = job.shot_annotations.get(str(number), {})
-            thumb = Path(settings.upload_dir) / job.job_id / 'thumbs' / f'shot_{number}.jpg'
             yield {
                 **shot, 'job_id': job.job_id, 'filename': job.filename,
                 'scene_number': scene.get('scene_number'), 'scene_title': scene.get('scene_title', ''),
@@ -70,6 +94,6 @@ def shot_views(job):
                 'tags': list(dict.fromkeys(shot.get('tags', []) + annotation.get('tags', []))),
                 'human_tags': annotation.get('tags', []), 'notes': annotation.get('notes', ''),
                 'review_status': annotation.get('review_status', 'unreviewed'),
-                'thumbnail_url': f'/api/thumbnails/{job.job_id}/{number}' if thumb.is_file() else None,
+                'thumbnail_url': thumbnail_url(job, number),
                 'preview_url': f'/api/library/{job.job_id}/media' if job.local_path else None,
             }

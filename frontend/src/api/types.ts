@@ -2,6 +2,7 @@
 
 export interface Shot {
   shot_number: number
+  thumbnail_url?: string | null
   start_time: string
   end_time: string
   shot_type: string

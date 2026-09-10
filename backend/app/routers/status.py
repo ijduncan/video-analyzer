@@ -18,5 +18,7 @@ async def get_status(job_id: str):
         "current_pass": job.current_pass,
         "current_scene": job.current_scene,
         "total_scenes": job.total_scenes,
+        "progress": job.progress,
+        "analysis_progress": job.analysis_progress,
         "error": job.error,
     }

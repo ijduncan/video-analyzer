@@ -7,6 +7,7 @@ from app.services.file_manager import ensure_remote_file
 from app.services.job_store import get_job, claim_analysis, update_job
 import asyncio
 import json
+from datetime import datetime, timezone
 
 router = APIRouter()
 
@@ -30,7 +31,10 @@ async def analyze(job_id: str, fps: float = Query(default=1, ge=0.5, le=5),
             async for event in run_analysis(job, fps, mode, custom_prompt=custom_prompt.strip() or None, api_key=api_key):
                 yield event
         except asyncio.CancelledError:
-            update_job(job_id, status='error', error='Connection closed. Retry analysis.', progress='Interrupted')
+            latest = get_job(job_id)
+            update_job(job_id, status='error', error='Connection closed. Completed sections preserved.', progress='Interrupted',
+                       analysis_progress={**(latest.analysis_progress if latest else {}), 'stage': 'interrupted',
+                                          'updated_at': datetime.now(timezone.utc).isoformat()})
             raise
         except Exception as exc:
             message = f'Analysis failed ({type(exc).__name__}). Check provider access and retry.'

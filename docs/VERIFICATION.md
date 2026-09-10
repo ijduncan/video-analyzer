@@ -8,7 +8,7 @@ The rebuild passes its local automated suite and live Gemini compatibility check
 
 | Check | Result |
 |---|---|
-| Backend/media/export tests | 58 tests passed, with 43 passing parameterized subtests |
+| Backend/media/export tests | 84 tests passed, with 49 passing parameterized subtests |
 | Frontend TypeScript and production build | Passed; Vite production bundle generated |
 | Frontend ESLint | Passed |
 | Diff whitespace check | Passed |
@@ -60,6 +60,14 @@ This separate UI test used 640×360 synthetic test-pattern footage with embedded
 Removed the FRAME branding, sidebar, dashboard totals, promotional copy, and onboarding panels. The library now opens with search, Videos/Shots, collapsed filters, Import, and Settings. Secondary metadata and analysis details use disclosure sections.
 
 Production build and ESLint passed. Browser checks at desktop and 390px mobile width covered import, preview, tag saving, keyword search, filter disclosure, analysis controls, and settings. JSON export returned HTTP 200; the automated browser's download capture was canceled, so this check does not establish a saved browser download. The disposable synthetic asset was removed through the UI and the library was left empty. No additional provider calls were needed.
+
+## Progressive analysis follow-up
+
+Indexing now publishes shots and thumbnails after each 30-second processing section. The live provider test used a separate 42-second synthetic source and isolated database: its first ten shots were saved at 16.03 seconds, thumbnails appeared at 16.31 seconds, and all fourteen shots finished at 23.09 seconds. These are observed fixture timings, not a latency guarantee for production footage. The remote test upload was deleted. See [progressive analysis](PROGRESSIVE_ANALYSIS.md) for the implementation, evidence and remaining limits.
+
+Browser verification replayed those saved partial/final snapshots through a separate local server and database, with the provider key disabled. Ten shots and their thumbnails were available while status remained analyzing; playing shot ten sought to 27 seconds and started playback. Unsaved tags, the selected shot and active tab survived the fourteen-shot refresh. With both a project filter excluding all assets and a query returning no shots, polling continued and a newly matching shot appeared automatically. A simulated error displayed saved partial shots with playable cards. The isolated fixture was restored and the QA server/browser stopped. Screenshots are retained under ignored `artifacts/qa/progressive-ui-*.png`. At short viewport heights, the inspector scrolls to reveal live shot cards below the progress controls.
+
+The existing 152-second user asset completed under the previous pipeline. After the local server update, its saved three shots and metadata remained available; it was not reanalyzed during verification.
 
 ## Remaining validation
 

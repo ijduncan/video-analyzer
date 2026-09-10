@@ -41,6 +41,7 @@ class Job:
     transcript: list[dict] = field(default_factory=list)
     analysis_config: dict = field(default_factory=dict)
     analysis_history: list[dict] = field(default_factory=list)
+    analysis_progress: dict = field(default_factory=dict)
     progress: str = "Ready to analyze"
     warnings: list[str] = field(default_factory=list)
     file_uploaded_at: str | None = None
@@ -113,9 +114,15 @@ def claim_analysis(job_id: str) -> bool:
         if not row:
             return False
         job = _decode(row[0])
-        if job.status in ("analyzing", "queued", "deleting"):
+        if job.status in ("analyzing", "queued", "processing", "deleting"):
             return False
         job.status, job.error, job.progress = "queued", None, "Waiting for analysis worker"
+        job.analysis_progress = {
+            "stage": "queued", "completed_sections": 0, "completed_shots": 0,
+            "processed_seconds": 0, "total_seconds": job.technical.get("duration_seconds"),
+            "total_sections": None, "failed_sections": 0,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
         _save(db, job)
     return True
 
@@ -128,7 +135,7 @@ def claim_deletion(job_id: str) -> bool:
         if not row:
             return False
         job = _decode(row[0])
-        if job.status in ("analyzing", "queued", "deleting"):
+        if job.status in ("analyzing", "queued", "processing", "deleting"):
             return False
         job.status, job.error, job.progress = "deleting", None, "Deleting asset and derived media"
         _save(db, job)
@@ -137,9 +144,11 @@ def claim_deletion(job_id: str) -> bool:
 
 def recover_interrupted_jobs():
     for job in list_jobs():
-        if job.status in ("analyzing", "queued"):
+        if job.status in ("analyzing", "queued", "processing"):
             update_job(job.job_id, status="error", error="Analysis interrupted by server restart. Retry to continue.",
-                       progress="Interrupted; previous results preserved")
+                       progress="Interrupted; previous results preserved",
+                       analysis_progress={**job.analysis_progress, "stage": "interrupted",
+                                          "updated_at": datetime.now(timezone.utc).isoformat()})
         elif job.status == "deleting":
             update_job(job.job_id, status="error", error="Deletion interrupted by server restart. Retry deletion to finish cleanup.",
                        progress="Deletion interrupted; retry deletion")

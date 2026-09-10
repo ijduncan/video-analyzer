@@ -56,8 +56,11 @@ async def ensure_remote_file(job, api_key: str | None = None):
                 return job
         except Exception:
             pass
-    update_job(job.job_id, progress='Uploading video to Gemini')
+    update_job(job.job_id, progress='Uploading video to Gemini',
+               analysis_progress={**job.analysis_progress, 'stage': 'uploading',
+                                  'updated_at': datetime.now(timezone.utc).isoformat()})
     uploaded = await upload_video(job.local_path, job.mime_type, api_key=api_key)
+    update_job(job.job_id, progress='Gemini is preparing the uploaded video')
     try:
         active = await poll_until_active(uploaded.name, api_key=api_key)
     except BaseException:

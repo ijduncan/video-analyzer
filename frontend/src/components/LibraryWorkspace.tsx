@@ -6,6 +6,7 @@ import { useSettingsStore } from '../stores/settingsStore'
 import { AssetInspector } from './library/AssetInspector'
 import { Icon } from './library/Icon'
 import { duration, errorMessage, reviewLabel } from './library/format'
+import { isActiveAnalysis } from './library/analysisProgress'
 import './LibraryWorkspace.css'
 
 export function LibraryWorkspace({ onOpenAnalyzer }: { onOpenAnalyzer: () => void }) {
@@ -80,7 +81,7 @@ export function LibraryWorkspace({ onOpenAnalyzer }: { onOpenAnalyzer: () => voi
     return () => controller.abort()
   }, [selectedId, refresh])
 
-  const analyzing = library?.assets.some(asset => ['queued', 'analyzing', 'processing'].includes(asset.status)) || (detail?.job_id === selectedId && detail?.status && ['queued', 'analyzing', 'processing'].includes(detail.status))
+  const analyzing = (library?.active_jobs || 0) > 0 || library?.assets.some(asset => isActiveAnalysis(asset.status)) || (detail?.job_id === selectedId && isActiveAnalysis(detail?.status))
   useEffect(() => {
     if (!analyzing) return
     const interval = setInterval(refreshLibrary, 4000)
