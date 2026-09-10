@@ -6,6 +6,7 @@ import pytest
 
 from app.services import composition_index as composition, visual_index
 from app.services.library_service import shot_views
+from app.services.adaptive_concurrency import AdaptiveConcurrency
 from test_visual_matching import visual_asset, wait_index
 
 
@@ -104,3 +105,115 @@ def test_incomplete_response_records_usage_without_publishing_profiles(client, v
         asyncio.run(composition.ensure(visual_asset, key, 1.5, 'fixture'))
     assert composition.cached(visual_asset, key) == {}
     assert composition.status(visual_asset, key)['requests'] == 1
+
+
+def save_profiles(asset, key, entries):
+    db = composition.db_for(asset, key)
+    try:
+        db.executemany('INSERT OR REPLACE INTO composition VALUES (?,?,?)', [
+            (composition.version(), round(s * 1000), json.dumps(profile(str(round(s * 1000))))) for s in entries])
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_parallel_composition_preserves_cache_and_does_not_repeat_frames(client, visual_asset, monkeypatch):
+    client.post(f'/api/visual/{visual_asset.job_id}/index')
+    state = wait_index(client, visual_asset.job_id)
+    key = state['revision']
+    calls = []
+    active = peak = 0
+
+    async def verify():
+        nonlocal active, peak
+        monkeypatch.setattr(composition, '_background_gate', AdaptiveConcurrency(2))
+        monkeypatch.setattr(composition.settings, 'composition_index_concurrency', 2)
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def generate(asset, revision, entries, api_key, **kwargs):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            calls.extend(entries)
+            if active == 2:
+                started.set()
+            try:
+                await release.wait()
+                save_profiles(asset, revision, entries)
+            finally:
+                active -= 1
+
+        monkeypatch.setattr(composition, 'generate', generate)
+        task = asyncio.create_task(composition.build(visual_asset, key, None))
+        try:
+            await asyncio.wait_for(started.wait(), 2)
+        finally:
+            release.set()
+            await task
+        assert peak == 2 and active == 0
+        assert len(calls) == len(set(calls)) == state['composition']['total']
+        assert composition.status(visual_asset, key)['indexed'] == state['composition']['total']
+        await composition.build(visual_asset, key, None)
+        assert len(calls) == state['composition']['total']
+
+    asyncio.run(verify())
+
+
+def test_interactive_composition_shares_inflight_frame(client, visual_asset, monkeypatch):
+    key, _ = visual_index.source_info(visual_asset)
+    calls = []
+
+    async def verify():
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def generate(asset, revision, entries, api_key, **kwargs):
+            calls.append(entries)
+            started.set()
+            await release.wait()
+            save_profiles(asset, revision, entries)
+
+        monkeypatch.setattr(composition, 'generate', generate)
+        background = asyncio.create_task(composition.ensure_batch(visual_asset, key, [1.5, 1.6]))
+        await started.wait()
+        interactive = asyncio.create_task(composition.ensure(visual_asset, key, 1.5))
+        await asyncio.sleep(0)
+        assert not interactive.done()
+        release.set()
+        await asyncio.gather(background, interactive)
+        assert calls == [[1.5, 1.6]]
+
+    asyncio.run(verify())
+
+
+def test_pause_cancels_every_composition_worker(client, visual_asset, monkeypatch):
+    client.post(f'/api/visual/{visual_asset.job_id}/index')
+    key = wait_index(client, visual_asset.job_id)['revision']
+    active = 0
+
+    async def verify():
+        nonlocal active
+        monkeypatch.setattr(composition, '_background_gate', AdaptiveConcurrency(2))
+        monkeypatch.setattr(composition.settings, 'composition_index_concurrency', 2)
+        started = asyncio.Event()
+
+        async def generate(*args, **kwargs):
+            nonlocal active
+            active += 1
+            if active == 2:
+                started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                active -= 1
+
+        monkeypatch.setattr(composition, 'generate', generate)
+        task = asyncio.create_task(composition.build(visual_asset, key, None))
+        composition._tasks[visual_asset.job_id] = task
+        try:
+            await asyncio.wait_for(started.wait(), 2)
+        finally:
+            await composition.stop(visual_asset.job_id)
+        assert task.cancelled() and active == 0
+        assert composition._background_gate.active == 0
+
+    asyncio.run(verify())
