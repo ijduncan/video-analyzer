@@ -9,6 +9,7 @@ import pytest
 from app.config import settings
 from app.models.library import AnalyzeRequest
 from app.routers import files
+from app.services import media_cleanup
 from app.services import job_runner, media_probe
 from app.services.job_store import (
     claim_analysis, claim_deletion, get_job, recover_interrupted_jobs, update_job,
@@ -80,32 +81,36 @@ def test_delete_keeps_local_cleanup_when_remote_cleanup_fails(client, asset, mon
     assert not original.exists() and not directory.exists()
 
 
-def test_delete_rejects_paths_outside_workspace_before_any_deletion(client, asset, tmp_path, monkeypatch):
+def test_delete_preserves_external_originals_while_removing_project(client, asset, tmp_path, monkeypatch):
     outside = tmp_path / 'outside.mov'
     outside.write_bytes(b'keep')
     update_job(asset.job_id, local_path=str(outside))
-    remote = Mock()
-    monkeypatch.setattr(files, 'get_client', remote)
+    update_job(asset.job_id, file_id='')
     response = client.delete(f'/api/files/{asset.job_id}')
-    assert response.status_code == 409
+    assert response.status_code == 200
     assert outside.read_bytes() == b'keep'
-    assert get_job(asset.job_id).status == 'error'
-    remote.assert_not_called()
+    assert get_job(asset.job_id) is None
     with pytest.raises(ValueError, match='directory'):
         files._deletion_paths(SimpleNamespace(job_id='..', local_path=''))
     with pytest.raises(ValueError, match='directory'):
         files._deletion_paths(SimpleNamespace(job_id='../neighbor', local_path=''))
 
 
-def test_local_cleanup_failure_retains_record_for_retry(client, asset, monkeypatch):
+def test_local_cleanup_failure_removes_record_and_retries_owned_cache(client, asset, monkeypatch):
     _, directory = _local_files(asset)
     update_job(asset.job_id, file_id='')
-    monkeypatch.setattr(files.shutil, 'rmtree', Mock(side_effect=PermissionError('in use')))
+    rmtree = media_cleanup.shutil.rmtree
+    monkeypatch.setattr(media_cleanup.shutil, 'rmtree', Mock(side_effect=PermissionError('in use')))
     result = client.delete(f'/api/files/{asset.job_id}')
-    assert result.status_code == 500
-    assert get_job(asset.job_id).status == 'error'
-    assert 'retry' in get_job(asset.job_id).progress.lower()
+    assert result.status_code == 200
+    assert result.json()['cleanup_pending'] is True
+    assert get_job(asset.job_id) is None
     assert directory.exists()
+    monkeypatch.setattr(media_cleanup.shutil, 'rmtree', rmtree)
+    media_cleanup.retry_pending()
+    assert not directory.exists()
+    with media_cleanup.connection() as db:
+        assert db.execute('SELECT COUNT(*) FROM media_cleanup').fetchone()[0] == 0
 
 
 def test_interrupted_deletion_can_be_retried_after_restart(asset):
@@ -193,3 +198,33 @@ def test_cancelled_poster_kills_and_waits_for_subprocess(tmp_path, monkeypatch):
         asyncio.run(media_probe.create_poster('source.mov', str(tmp_path / 'poster.jpg'), 10))
     proc.kill.assert_called_once()
     assert proc.wait.await_count == 2
+
+
+def test_delete_never_unlinks_another_projects_copy(client, asset):
+    root = Path(settings.upload_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    other = root / 'different-project.mov'
+    other.write_bytes(b'keep other project')
+    update_job(asset.job_id, file_id='', local_path=str(other))
+    assert client.delete(f'/api/files/{asset.job_id}').status_code == 200
+    assert other.read_bytes() == b'keep other project'
+
+
+def test_locked_app_copy_is_queued_without_touching_original(client, asset, monkeypatch, tmp_path):
+    owned, directory = _local_files(asset)
+    source = tmp_path / 'original.mov'
+    source.write_bytes(b'original')
+    update_job(asset.job_id, file_id='')
+    unlink = Path.unlink
+    def locked(path, *args, **kwargs):
+        if path == owned:
+            raise PermissionError('in use')
+        return unlink(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'unlink', locked)
+    result = client.delete(f'/api/files/{asset.job_id}')
+    assert result.status_code == 200 and result.json()['cleanup_pending']
+    assert owned.exists() and not directory.exists()
+    assert source.read_bytes() == b'original'
+    monkeypatch.setattr(Path, 'unlink', unlink)
+    media_cleanup.retry_pending()
+    assert not owned.exists() and source.read_bytes() == b'original'

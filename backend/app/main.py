@@ -1,4 +1,5 @@
 import os
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -23,7 +24,11 @@ async def lifespan(app: FastAPI):
     from app.services.job_store import recover_interrupted_jobs
     from app.services.job_runner import shutdown_jobs
     recover_interrupted_jobs()
+    from app.services.media_cleanup import cleanup_worker
+    cleanup_task = asyncio.create_task(cleanup_worker())
     yield
+    cleanup_task.cancel()
+    await asyncio.gather(cleanup_task, return_exceptions=True)
     from app.services.visual_index import shutdown
     await shutdown()
     await shutdown_jobs()

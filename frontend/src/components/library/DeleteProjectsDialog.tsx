@@ -45,7 +45,7 @@ export function DeleteProjectsDialog({ projects, onClose, onDeleted }: {
 
   return <dialog ref={dialog} className="lw-settings-dialog lw-delete-projects" aria-labelledby="delete-projects-title" onCancel={event => { if (lock.current) event.preventDefault(); else onClose() }}>
     <h2 id="delete-projects-title">Delete {remaining.length === 1 ? 'project' : `${remaining.length} projects`}?</h2>
-    <p>Permanently deletes the imported videos, shots, metadata, and saved analysis. Original files outside this library are kept.</p>
+    <p>Removes these projects and their analysis from the app. Deletes only copies and cache files created by the app. Your original source files are never deleted.</p>
     <ul>{remaining.map(project => <li key={project.id}><strong>{project.title}</strong>{errors[project.id] && <span role="alert">{errors[project.id]}</span>}</li>)}</ul>
     {busy && <p role="status">Deleting… {completed} / {remaining.length}</p>}
     {!busy && Object.keys(errors).length > 0 && <p role="status">Some projects couldn’t be deleted. You can retry the remaining projects.</p>}
