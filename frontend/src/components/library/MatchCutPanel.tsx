@@ -6,42 +6,54 @@ import type { Shot } from '../../api/types'
 import { visualFrame, visualRequest } from '../../api/visual'
 import type { VisualIndex, VisualMatch, VisualResults, VisualShape } from '../../api/visual'
 import { errorMessage, timestamp } from './format'
+import { readMatchCutSession, saveMatchCutSession } from './matchCutSession'
 import './MatchCutPanel.css'
 
 const AXES = ['shape', 'composition', 'color'] as const
 const time = (seconds: number) => `${Math.floor(seconds / 60)}:${(seconds % 60).toFixed(3).padStart(6, '0')}`
 const midpoint = (shot: Shot) => (timestamp(shot.start_time) + timestamp(shot.end_time)) / 2
 
-export function MatchCutPanel({ asset, shots, initialShot }: { asset: AssetDetail; shots: Shot[]; initialShot?: Shot }) {
-  const [shotNumber, setShotNumber] = useState(initialShot?.shot_number || shots[0]?.shot_number)
+export function MatchCutPanel({ asset, shots, initialShot, useInitialShot = false }: { asset: AssetDetail; shots: Shot[]; initialShot?: Shot; useInitialShot?: boolean }) {
+  const run = asset.analysis_config?.started_at || null
+  const [saved] = useState(() => {
+    const session = readMatchCutSession(asset.job_id, run)
+    if (!session || !shots.some(s => s.shot_number === session.shotNumber)) return null
+    if (!useInitialShot || !initialShot) return session
+    return { ...session, shotNumber: initialShot.shot_number, seconds: midpoint(initialShot),
+      region: null, sourceShapeId: null, knownShapes: null, result: null, resultKey: '', searchIntent: '', selected: null }
+  })
+  const [shotNumber, setShotNumber] = useState(saved?.shotNumber ?? initialShot?.shot_number ?? shots[0]?.shot_number)
   const shot = shots.find(s => s.shot_number === shotNumber) || shots[0]
-  const [seconds, setSeconds] = useState(shot ? midpoint(shot) : 0)
+  const [seconds, setSeconds] = useState(saved?.seconds ?? (shot ? midpoint(shot) : 0))
   const [frameSeconds, setFrameSeconds] = useState(seconds)
   const [projects, setProjects] = useState<LibraryProject[]>([])
-  const [targetIds, setTargetIds] = useState([asset.job_id])
-  const [indexes, setIndexes] = useState<VisualIndex[]>([])
-  const [weights, setWeights] = useState({ shape: 1, composition: 0, color: 0 })
-  const [region, setRegion] = useState<number[] | null>(null)
-  const [sourceShapeId, setSourceShapeId] = useState<number | null>(null)
-  const [alignShape, setAlignShape] = useState(true)
-  const [knownShapes, setKnownShapes] = useState<{ key: string; forms: VisualShape[] } | null>(null)
-  const [result, setResult] = useState<VisualResults | null>(null)
-  const [selected, setSelected] = useState<VisualMatch | null>(null)
-  const [incoming, setIncoming] = useState(0)
-  const [incomingFrame, setIncomingFrame] = useState(0)
+  const [targetIds, setTargetIds] = useState(saved?.targetIds ?? [asset.job_id])
+  const [indexes, setIndexes] = useState<VisualIndex[]>(saved?.indexes ?? [])
+  const [validatedScope, setValidatedScope] = useState('')
+  const [weights, setWeights] = useState(saved?.weights ?? { shape: 1, composition: 0, color: 0 })
+  const [region, setRegion] = useState<number[] | null>(saved?.region ?? null)
+  const [sourceShapeId, setSourceShapeId] = useState<number | null>(saved?.sourceShapeId ?? null)
+  const [alignShape, setAlignShape] = useState(saved?.alignShape ?? true)
+  const [knownShapes, setKnownShapes] = useState<{ key: string; forms: VisualShape[] } | null>(saved?.knownShapes ?? null)
+  const [result, setResult] = useState<VisualResults | null>(saved?.result ?? null)
+  const [selected, setSelected] = useState<VisualMatch | null>(saved?.selected ?? null)
+  const [incoming, setIncoming] = useState(saved?.incoming ?? 0)
+  const [incomingFrame, setIncomingFrame] = useState(incoming)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [working, setWorking] = useState(false)
   const [preview, setPreview] = useState(false)
-  const [handle, setHandle] = useState(2)
+  const [handle, setHandle] = useState(saved?.handle ?? 2)
   const [indexErrors, setIndexErrors] = useState<string[]>([])
   const request = useRef<AbortController | null>(null)
   const sourceIndex = indexes.find(i => i.job_id === asset.job_id)
   const scopeKey = JSON.stringify([...new Set([asset.job_id, ...targetIds])])
   const searchKey = JSON.stringify([shotNumber, frameSeconds, targetIds, weights, region, sourceShapeId, alignShape, indexes.map(i => [i.job_id, i.revision, i.composition?.version, i.shape?.version])])
-  const [resultKey, setResultKey] = useState('')
-  const stale = !!result && resultKey !== searchKey
-  const coverage = indexes.filter(i => targetIds.includes(i.job_id)).map(i => `${i.job_id}:${i.composition?.indexed || 0}:${i.shape?.indexed || 0}`).join('|')
+  const [resultKey, setResultKey] = useState(saved?.resultKey ?? '')
+  const [searchIntent, setSearchIntent] = useState(saved?.searchIntent ?? '')
+  const ready = validatedScope === scopeKey
+  const stale = !!result && (!ready || resultKey !== searchKey)
+  const coverage = indexes.filter(i => targetIds.includes(i.job_id)).map(i => `${i.job_id}:${i.indexed}:${i.composition?.indexed || 0}:${i.shape?.indexed || 0}`).join('|')
   const lastCoverage = useRef('')
   const sourceRevision = sourceIndex?.revision
   const number = shot?.shot_number
@@ -80,6 +92,7 @@ export function MatchCutPanel({ asset, shots, initialShot }: { asset: AssetDetai
         catch (err) { return { error: errorMessage(err) } }
       }))
       if (controller.signal.aborted) return
+      setValidatedScope(rows.every(row => row.data) ? scopeKey : '')
       setIndexes(rows.flatMap(row => row.data ? [row.data] : []))
       setIndexErrors([...new Set(rows.flatMap(row => row.error ? [row.error] : []))])
       timer = setTimeout(poll, 1800)
@@ -97,6 +110,16 @@ export function MatchCutPanel({ asset, shots, initialShot }: { asset: AssetDetai
   }, [incoming])
   useEffect(() => { request.current?.abort(); setWorking(false) }, [searchKey])
 
+  useEffect(() => {
+    if (!shotNumber) return
+    // Persist user state, not playback, errors or in-flight request flags. Indexes
+    // are revalidated before saved candidates can be previewed or exported.
+    saveMatchCutSession(asset.job_id, { run, shotNumber, seconds, targetIds, weights,
+      region, sourceShapeId, alignShape, knownShapes, indexes, result, resultKey,
+      searchIntent, selected, incoming, handle })
+  }, [asset.job_id, run, shotNumber, seconds, targetIds, weights, region, sourceShapeId,
+    alignShape, knownShapes, indexes, result, resultKey, searchIntent, selected, incoming, handle])
+
   async function build() {
     setError('')
     try {
@@ -105,7 +128,8 @@ export function MatchCutPanel({ asset, shots, initialShot }: { asset: AssetDetai
     } catch (err) { setError(errorMessage(err)) }
   }
   const find = useCallback(async (automatic = false) => {
-    if (!number || !sourceRevision) return
+    if (!number || !sourceRevision || !ready) return
+    if (!automatic) setSearchIntent(searchKey)
     request.current?.abort()
     const controller = new AbortController(); request.current = controller
     lastCoverage.current = coverage
@@ -121,12 +145,14 @@ export function MatchCutPanel({ asset, shots, initialShot }: { asset: AssetDetai
       if (!automatic) setSelected(null)
     } catch (err) { if (!controller.signal.aborted) setError(errorMessage(err)) }
     finally { if (!controller.signal.aborted) setWorking(false) }
-  }, [number, sourceRevision, coverage, asset.job_id, frameSeconds, targetIds, weights, region, sourceShapeId, alignShape, shapeFrameKey, searchKey])
+  }, [number, sourceRevision, ready, coverage, asset.job_id, frameSeconds, targetIds, weights, region, sourceShapeId, alignShape, shapeFrameKey, searchKey])
   useEffect(() => {
-    if (!(weights.composition || weights.shape) || !result || resultKey !== searchKey || working || coverage === lastCoverage.current) return
+    // Returning to an unfinished search only reads cached analysis. It never
+    // starts additional Gemini work; active server jobs keep their own progress.
+    if (!ready || searchIntent !== searchKey || working || coverage === lastCoverage.current) return
     const timer = setTimeout(() => { void find(true) }, 300)
     return () => clearTimeout(timer)
-  }, [weights.composition, weights.shape, result, resultKey, searchKey, working, coverage, find])
+  }, [ready, searchIntent, searchKey, working, coverage, find])
   function choose(match: VisualMatch) { setSelected(match); setIncoming(match.seconds); setIncomingFrame(match.seconds) }
   function exportPair() {
     if (!selected || !shot || stale) return
@@ -160,7 +186,7 @@ export function MatchCutPanel({ asset, shots, initialShot }: { asset: AssetDetai
   const sourceBox = !stale && weights.composition && result?.source_composition?.subject_box
   const subjectBox = sourceBox ? [sourceBox[1] / 1000, sourceBox[0] / 1000, (sourceBox[3] - sourceBox[1]) / 1000, (sourceBox[2] - sourceBox[0]) / 1000] : null
   return <section className="mc-panel" aria-label="Visual match-cut discovery">
-    <div className="mc-heading"><div><h2>Match cuts</h2><p>Match shape, composition, and color across your footage.</p></div><button className="lw-button lw-button-primary mc-find" onClick={() => find()} disabled={working || !available || !targetIds.length || !sourceIndex || seconds !== frameSeconds || !Object.values(weights).some(Boolean)}>{working ? weights.composition ? 'Reading composition…' : 'Finding matches…' : 'Find match cut'}</button></div>
+    <div className="mc-heading"><div><h2>Match cuts</h2><p>Match shape, composition, and color across your footage.</p></div><button className="lw-button lw-button-primary mc-find" onClick={() => find()} disabled={!ready || working || !available || !targetIds.length || !sourceIndex || seconds !== frameSeconds || !Object.values(weights).some(Boolean)}>{working ? weights.composition ? 'Reading composition…' : 'Finding matches…' : 'Find match cut'}</button></div>
     <div className="mc-controls">
       <label className="lw-field">Outgoing shot<select aria-label="Outgoing shot" value={shot.shot_number} onChange={event => {
         const next = shots.find(s => s.shot_number === Number(event.target.value))!
