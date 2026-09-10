@@ -3,7 +3,7 @@ import { useAnalysisStore } from '../stores/analysisStore'
 
 export function ExportMenu() {
   const [isOpen, setIsOpen] = useState(false)
-  const { analysisStatus, jobId, flashResult, deepResults, summary } = useAnalysisStore()
+  const { analysisStatus, jobId, flashResult, summary } = useAnalysisStore()
 
   if (analysisStatus !== 'complete') return null
 

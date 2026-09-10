@@ -38,3 +38,35 @@ async def delete_file(file_name: str):
     """Delete a file from Google's File API."""
     client = get_client()
     await asyncio.to_thread(client.files.delete, name=file_name)
+
+async def ensure_remote_file(job, api_key: str | None = None):
+    """Refresh expiring Google uploads only when analysis is requested."""
+    from datetime import datetime, timezone
+    from app.services.job_store import update_job
+    if job.youtube_url:
+        return job
+    if not job.local_path or not Path(job.local_path).is_file():
+        raise ValueError('The original video is no longer available. Import it again.')
+    client = get_client(api_key)
+    if job.file_id:
+        try:
+            remote = await asyncio.to_thread(client.files.get, name=job.file_id)
+            if str(remote.state) in ('ACTIVE', 'FileState.ACTIVE'):
+                job.file_uri = remote.uri
+                return job
+        except Exception:
+            pass
+    update_job(job.job_id, progress='Uploading video to Gemini')
+    uploaded = await upload_video(job.local_path, job.mime_type, api_key=api_key)
+    try:
+        active = await poll_until_active(uploaded.name, api_key=api_key)
+    except BaseException:
+        try:
+            await asyncio.to_thread(client.files.delete, name=uploaded.name)
+        except Exception:
+            pass
+        raise
+    job.file_id, job.file_uri = active.name, active.uri
+    job.file_uploaded_at = datetime.now(timezone.utc).isoformat()
+    update_job(job.job_id, file_id=job.file_id, file_uri=job.file_uri, file_uploaded_at=job.file_uploaded_at)
+    return job

@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef } from 'react'
-import { connectAnalysisStream } from '../api/analyze'
-import type { AnalysisEvent, FlashAnalysis, SceneDeepAnalysis, VideoSummary, CostEstimate } from '../api/types'
+import { connectAnalysisStream, type AnalysisConnection } from '../api/analyze'
+import type { AnalysisEvent, FlashAnalysis, SceneDeepAnalysis, VideoSummary } from '../api/types'
 import { useAnalysisStore } from '../stores/analysisStore'
 
 export function useAnalysis() {
   const store = useAnalysisStore()
-  const esRef = useRef<EventSource | null>(null)
+  const esRef = useRef<AnalysisConnection | null>(null)
 
   const handleEvent = useCallback((event: AnalysisEvent) => {
     switch (event.type) {

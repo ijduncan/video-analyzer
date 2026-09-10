@@ -2,12 +2,16 @@ services:
   app:
     build: .
     ports:
-      - "5173:8000"
+      - "127.0.0.1:5173:8000"
     environment:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GEMINI_ANALYSIS_MODEL=${GEMINI_ANALYSIS_MODEL:-gemini-3.8-flash}
+      - GEMINI_DEEP_MODEL=${GEMINI_DEEP_MODEL:-gemini-3.8-flash}
       - ALLOWED_ORIGINS=["http://localhost:5173"]
     volumes:
       - uploads:/app/backend/uploads
+      - library:/app/backend/data
 
 volumes:
   uploads:
+  library:

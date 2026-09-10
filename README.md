@@ -1,104 +1,115 @@
-# Video Analyzer
+# FRAME / Video Analyzer
 
-AI-powered video analysis tool that breaks down any video into scenes, shots, and detailed metadata using Google Gemini.
+An agency-first footage library with Gemini video analysis, editable shot metadata, and portable editorial handoffs. Built for finding and reusing footage across client projects, with a deeper analysis workspace for filmmakers.
 
-Upload a video (or paste a YouTube URL), and get a full structural breakdown: scene detection, cinematography analysis, shot matching, custom AI prompts, and export to EDL/XML for your NLE.
+## What works
 
-## Features
+- **Persistent library:** SQLite stores assets, analysis results, annotations, project/client/campaign data, collections, rights status, and review decisions across restarts.
+- **Local-first import:** import multiple videos without an AI key; ffprobe reads source duration, resolution, codec, frame rate, audio presence and embedded timecode. ffmpeg produces actual footage posters and shot thumbnails.
+- **Footage discovery:** search filenames, human metadata and AI descriptions across the library or individual shots. Search is currently keyword matching, with project, review, tag and rights filters; it is not a vector/semantic search engine.
+- **Evidence-bearing analysis:** Gemini proposes scenes, shots, subjects, actions, visible text, logos, location, cinematography and timestamped evidence. Human tags/notes are separate from model suggestions. The full preset adds scene insights, summary and related shots; a custom brief adds targeted analysis.
+- **Background processing:** analysis continues when a library tab closes, progress and completed stages persist, duplicate runs are rejected, and interrupted runs are identified on restart. Retry is explicit; a restart does not automatically resume external model calls.
+- **Editorial review:** preview source footage, seek to a matched shot, edit tags and notes, record rights and review status, and distinguish approximate AI timestamps from source technical facts.
+- **Portable exports:** JSON, UTF-8 CSV, XMP with timed markers, transcript SRT, and guarded EDL/FCPXML reference exports. Source media remains unchanged.
+- **Original analyzer:** the earlier scene timeline, detail, comparison and report views remain available from **Analyzer**.
 
-- **3-pass AI analysis** — Scene detection (Flash), deep per-scene analysis (Pro), full summary (Pro)
-- **Shot matching** — Find visually similar shots across the video
-- **Custom prompts** — Ask the AI anything about your video
-- **Thumbnail extraction** — Frame-accurate thumbnails via ffmpeg
-- **YouTube URL support** — Paste a link, skip the upload
-- **Side-by-side comparison** — Compare two videos with structured AI analysis
-- **Export** — JSON, CSV, PDF, Markdown, EDL (CMX 3600), FCP XML
-- **Real-time progress** — Server-Sent Events stream results as they're generated
-- **BYOK** — Bring your own Google API key via the Settings menu
+## Run locally
 
-## Quick Start
+Requirements: Python 3.11+, Node.js 20.19+ or 22.12+, and ffmpeg/ffprobe on PATH.
 
-### Prerequisites
+### Windows PowerShell
 
-- **Python 3.11+**
-- **Node.js 20+**
-- **ffmpeg** (for thumbnail extraction)
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r backend/requirements.txt
+npm --prefix frontend ci
+npm --prefix frontend run build
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
+```
 
-### 1. Clone and install
+Open [the local workspace](http://127.0.0.1:8000). The backend serves the built frontend, so one server is enough.
+
+### macOS / Linux
 
 ```bash
-git clone https://github.com/ijduncan/video-analyzer.git
-cd video-analyzer
-
-# Backend
-cd backend
 python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# Frontend
-cd ../frontend
-npm install
+.venv/bin/pip install -r backend/requirements.txt
+npm --prefix frontend ci
+npm --prefix frontend run build
+.venv/bin/python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
 ```
 
-### 2. Run
+For frontend development, run the backend on port 8000 and `npm --prefix frontend run dev` in another terminal. Vite proxies `/api` to the backend.
 
-```bash
-# Terminal 1 — Backend
-cd backend
-source .venv/bin/activate
-uvicorn app.main:app --reload --port 8000
+### Gemini configuration
 
-# Terminal 2 — Frontend
-cd frontend
-npm run dev
-```
+Create an ignored `.env.local` or `.env` in the repository root (see `.env.example`):
 
-Or use the convenience script:
-
-```bash
-./scripts/dev.sh
-```
-
-Open **http://localhost:5173**
-
-### 3. Set your API key
-
-Click the gear icon in the top-right corner and enter your [Google AI Studio API key](https://aistudio.google.com/apikey). The key is stored in your browser's localStorage and sent directly to Google's API — it never touches any other server.
-
-Alternatively, create a `.env` file in the project root:
-
-```
+```dotenv
 GOOGLE_API_KEY=your-key-here
+GEMINI_ANALYSIS_MODEL=gemini-3.8-flash
+GEMINI_DEEP_MODEL=gemini-3.8-flash
 ```
 
-## Docker
+The model defaults were selected from official documentation current in September 2026. They are configurable because availability, pricing and quality change. Verify access and benchmark representative footage before bulk processing. Both presets initially use the same stable model; the full preset performs more analysis passes.
 
-Run everything with one command:
+Restart the backend after changing `.env.local` or `.env`. Alternatively use **Workspace settings** to supply a personal key. Browser keys are saved in browser localStorage and transmitted in headers to this application's backend, which calls Google. They are not placed in analysis URLs or saved in the library database. Importing/organizing footage does not send it to Google; starting analysis does.
+
+Both Gemini presets passed a live smoke test with the configured key on a synthetic six-second, two-shot clip. Both identified the two exact on-screen labels and produced no invented transcript for silent footage. This verifies API compatibility; representative agency/filmmaker accuracy and comparative model performance remain unbenchmarked. See `docs/VERIFICATION.md`.
+
+### Docker
 
 ```bash
 docker compose up --build
 ```
 
-Open **http://localhost:5173**
+Open [the Docker workspace](http://localhost:5173). Compose binds to loopback and persists both the library database and media in separate volumes. Run one API worker for this local workspace.
 
-## Tech Stack
+## Storage and processing
 
-| Layer | Tech |
-|-------|------|
-| Frontend | React 19, Vite 7, Tailwind CSS v4, Zustand |
-| Backend | Python, FastAPI, SSE (sse-starlette) |
-| AI | Google Gemini 2.5 Flash + Pro (google-genai SDK) |
-| Video | ffmpeg (thumbnails), Google File API (upload) |
+| Item | Default location / behavior |
+|---|---|
+| Original videos and thumbnails | `backend/uploads/` (ignored by Git) |
+| Library and analysis records | `backend/data/library.sqlite3` (ignored by Git) |
+| Provider key | `.env.local` / `.env` or optional browser override; never in SQLite |
+| Upload limit | 2,000 MiB per file; configurable via `MAX_FILE_SIZE_MB` |
+| Analysis concurrency | Two jobs; configurable via `MAX_CONCURRENT_ANALYSES` |
+| Google file retention | Expiring provider references are refreshed from local originals before analysis |
+| Results | Durable after each completed stage; partial failures appear as warnings |
 
-## Keyboard Shortcuts
+`DATABASE_PATH` and `UPLOAD_DIR` can override storage locations. Back up both the database and originals; exports do not package video files. YouTube references support analysis but do not provide local technical metadata or a native preview; use a local original for reliable editorial handoffs.
 
-| Key | Action |
-|-----|--------|
-| `Space` | Play / Pause |
-| `Left` / `Right` | Seek -5s / +5s |
-| `1`-`6` | Switch tabs (Timeline, Detail, Summary, Matches, Custom, Raw) |
+## Accuracy and export boundaries
 
-## License
+AI scene/shot boundaries are **approximate**. Sampling can miss short edits; decimal timestamps do not imply frame accuracy. Model confidence is an uncalibrated estimate, and visible branding does not establish usage rights. Speech text is model transcription with shot-level timing, not a verified word-aligned transcript. SRT export fails clearly when no actual timed transcript exists; it never turns shot descriptions into subtitles.
 
-MIT
+EDL/FCPXML exports require verified source frame rate and embedded source timecode. Fractional/drop-frame sources are deliberately rejected by the current adapter. FCPXML also needs valid source dimensions and references the original filename relative to the exported XML; put the original beside the XML or relink in the editor. Generated structures are tested, but import/round-trip behavior in Premiere, Resolve and Final Cut Pro has not been tested in installed editors.
+
+Cost figures use recorded provider token usage and dated pricing where available. Thinking tokens are included; audio/context/cache/pricing differences can make an aggregate estimate incomplete. Unknown models are marked unpriced, not assigned a zero-dollar promise.
+
+This release is a **single-user local workspace**. Shared agency deployment still needs authentication, tenant boundaries, permission checks, object storage, a separate durable worker queue, operational monitoring and audit trails. The research and roadmap specify those changes; do not expose the unauthenticated local API as a public service.
+
+## Verification
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install pytest httpx
+.\.venv\Scripts\python.exe -m pytest backend/tests tests -q
+npm --prefix frontend run build
+npm --prefix frontend run lint
+```
+
+Tests exercise real ffmpeg import/probe/poster generation and range playback, durable storage, metadata validation, search/review behavior, job recovery, mocked analysis stages, timestamp validation, provenance and export formatting. A source corpus with human ground truth is still needed for model accuracy comparisons.
+
+## Research and implementation decisions
+
+Start with [the research brief](docs/research/README.md), then read:
+
+- [Model landscape and architecture](docs/research/model-landscape.md)
+- [Agency and filmmaker workflows / competitor analysis](docs/research/workflows-and-market.md)
+- [Product roadmap and release gates](docs/ROADMAP.md)
+
+The research compares Gemini, Twelve Labs, cloud indexers and open models, plus Premiere, Resolve, Final Cut, Frame.io, iconik and axle. It distinguishes vendor claims from verified capabilities and recommendations. No universal model winner is assumed.
+
+## Stack
+
+React 19 / TypeScript / Vite / Zustand; Python / FastAPI / Pydantic; SQLite; Google Gen AI SDK; ffmpeg / ffprobe. API docs are available at `/docs` while the server runs.

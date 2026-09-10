@@ -3,9 +3,11 @@ import logging
 
 from google.genai import types
 
+from app.config import settings
 from app.models.analysis import FlashAnalysis, VideoSummary
 from app.prompts.summary_prompt import SUMMARY_PROMPT
 from app.services.gemini_client import get_client
+from app.services.analysis_support import EVIDENCE_INSTRUCTION, extract_usage, response_text
 
 logger = logging.getLogger(__name__)
 
@@ -28,21 +30,19 @@ async def run_summary_pass(
 
     response = await asyncio.to_thread(
         client.models.generate_content,
-        model="gemini-2.5-pro",
+        model=settings.gemini_deep_model,
         contents=[video_part, context],
         config=types.GenerateContentConfig(
+            system_instruction=EVIDENCE_INSTRUCTION,
             response_mime_type="application/json",
             response_schema=VideoSummary,
         ),
     )
 
-    usage = {}
-    if response.usage_metadata:
-        usage = {
-            "input_tokens": response.usage_metadata.prompt_token_count or 0,
-            "output_tokens": response.usage_metadata.candidates_token_count or 0,
-        }
-
-    parsed = VideoSummary.model_validate_json(response.text)
+    usage = extract_usage(response, settings.gemini_deep_model, "summary")
+    parsed = VideoSummary.model_validate_json(response_text(response))
+    parsed.total_runtime = flash_result.total_duration
+    parsed.total_scenes = flash_result.total_scenes
+    parsed.total_shots = flash_result.total_shots
     logger.info("Summary pass complete")
     return parsed, usage

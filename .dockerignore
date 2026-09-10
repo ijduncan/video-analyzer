@@ -7,6 +7,10 @@ frontend/dist
 backend/uploads
 .git
 .env
+.env.*
+backend/data
+artifacts
+.pytest_cache
 *.swp
 *.swo
 .DS_Store

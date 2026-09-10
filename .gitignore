@@ -27,3 +27,8 @@ Thumbs.db
 
 # Temp uploads
 backend/uploads/
+backend/data/
+.pytest_cache/
+artifacts/qa/
+.env.*
+!.env.example

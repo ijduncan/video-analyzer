@@ -4,7 +4,9 @@ import logging
 
 from google.genai import types
 
+from app.config import settings
 from app.services.gemini_client import get_client
+from app.services.analysis_support import EVIDENCE_INSTRUCTION, response_text
 
 logger = logging.getLogger(__name__)
 
@@ -46,13 +48,16 @@ async def run_comparison(
 
     response = await asyncio.to_thread(
         client.models.generate_content,
-        model="gemini-2.5-pro",
+        model=settings.gemini_deep_model,
         contents=[video_a_part, video_b_part, prompt],
         config=types.GenerateContentConfig(
+            system_instruction=EVIDENCE_INSTRUCTION,
             response_mime_type="application/json",
         ),
     )
 
-    result = json.loads(response.text)
+    result = json.loads(response_text(response))
+    if not isinstance(result, dict):
+        raise ValueError("Comparison must return a JSON object")
     logger.info("Comparison complete")
     return result

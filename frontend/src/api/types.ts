@@ -11,6 +11,17 @@ export interface Shot {
   subjects: string[]
   dominant_colors: string[]
   mood: string
+  tags?: string[]
+  actions?: string[]
+  visible_text?: string[]
+  logos?: string[]
+  location?: string
+  transcript?: string
+  evidence?: { modality: 'visual' | 'audio' | 'both'; description: string; start_time: string; end_time: string }[]
+  confidence?: number | null
+  confidence_basis?: string
+  timestamp_accuracy?: string
+  analysis_warnings?: string[]
 }
 
 export interface Scene {
@@ -27,6 +38,10 @@ export interface FlashAnalysis {
   total_shots: number
   total_scenes: number
   scenes: Scene[]
+  model?: string
+  schema_version?: string
+  timestamp_accuracy?: string
+  analysis_warnings?: string[]
 }
 
 // --- Pass 2: Deep Analysis ---
@@ -100,7 +115,7 @@ export interface CostEstimate {
   pro_output_tokens: number
   total_input_tokens: number
   total_output_tokens: number
-  estimated_cost_usd: number
+  estimated_cost_usd: number | null
 }
 
 // --- API Responses ---

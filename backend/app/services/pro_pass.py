@@ -1,24 +1,22 @@
 import asyncio
-import json
 import logging
 
 from google.genai import types
 
+from app.config import settings
 from app.models.analysis import SceneDeepAnalysis, Scene
 from app.prompts.pro_prompt import PRO_SCENE_ANALYSIS_PROMPT
 from app.services.gemini_client import get_client
+from app.services.analysis_support import (
+    EVIDENCE_INSTRUCTION, clip_offset, extract_usage, response_text,
+    time_to_seconds, validate_evidence,
+)
 
 logger = logging.getLogger(__name__)
 
 
 def _parse_time_to_seconds(time_str: str) -> float:
-    """Convert MM:SS or HH:MM:SS to seconds."""
-    parts = time_str.split(":")
-    if len(parts) == 2:
-        return int(parts[0]) * 60 + int(parts[1])
-    elif len(parts) == 3:
-        return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-    return 0.0
+    return time_to_seconds(time_str)
 
 
 async def run_pro_scene(
@@ -42,8 +40,8 @@ async def run_pro_scene(
                     mime_type=mime_type,
                 ),
                 video_metadata=types.VideoMetadata(
-                    start_offset=f"{int(start_secs)}s",
-                    end_offset=f"{int(end_secs)}s",
+                    start_offset=clip_offset(start_secs),
+                    end_offset=clip_offset(end_secs),
                 ),
             ),
             types.Part(
@@ -54,22 +52,20 @@ async def run_pro_scene(
 
     response = await asyncio.to_thread(
         client.models.generate_content,
-        model="gemini-2.5-pro",
+        model=settings.gemini_deep_model,
         contents=contents,
         config=types.GenerateContentConfig(
+            system_instruction=EVIDENCE_INSTRUCTION,
             response_mime_type="application/json",
             response_schema=SceneDeepAnalysis,
         ),
     )
 
-    usage = {}
-    if response.usage_metadata:
-        usage = {
-            "input_tokens": response.usage_metadata.prompt_token_count or 0,
-            "output_tokens": response.usage_metadata.candidates_token_count or 0,
-        }
-
-    parsed = SceneDeepAnalysis.model_validate_json(response.text)
+    usage = extract_usage(response, settings.gemini_deep_model, "deep_analysis")
+    parsed = SceneDeepAnalysis.model_validate_json(response_text(response))
     parsed.scene_number = scene.scene_number
+    parsed.evidence, warnings = validate_evidence(parsed.evidence, start_secs, end_secs)
+    parsed.analysis_warnings.extend(warnings)
+    parsed.review_status = "unreviewed"
     logger.info(f"Pro pass complete for scene {scene.scene_number}")
     return parsed, usage

@@ -3,37 +3,31 @@ import logging
 
 from google.genai import types
 
+from app.config import settings
 from app.models.analysis import (
     FlashAnalysis,
     Scene,
     SceneDetectionResult,
+    SceneOutline,
     Shot,
     ShotDetectionResult,
 )
 from app.prompts.scene_prompt import SCENE_DETECTION_PROMPT
 from app.prompts.shot_prompt import SHOT_DETECTION_PROMPT
 from app.services.gemini_client import get_client
+from app.services.analysis_support import (
+    EVIDENCE_INSTRUCTION, clip_offset, extract_usage, response_text,
+    time_to_seconds, validate_scenes, validate_shots,
+)
 
 logger = logging.getLogger(__name__)
-
-
-def time_to_seconds(t: str) -> float:
-    """Convert MM:SS or HH:MM:SS to seconds."""
-    parts = t.strip().split(":")
-    try:
-        if len(parts) == 2:
-            return int(parts[0]) * 60 + float(parts[1])
-        if len(parts) == 3:
-            return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
-    except (ValueError, IndexError):
-        pass
-    return 0.0
 
 
 async def run_scene_detection(
     file_uri: str,
     mime_type: str,
     api_key: str | None = None,
+    duration_seconds: float | None = None,
 ) -> tuple[SceneDetectionResult, dict]:
     """Stage 1: detect structural scene boundaries across the full video.
 
@@ -47,22 +41,22 @@ async def run_scene_detection(
 
     response = await asyncio.to_thread(
         client.models.generate_content,
-        model="gemini-2.5-flash",
-        contents=[video_part, SCENE_DETECTION_PROMPT],
+        model=settings.gemini_analysis_model,
+        contents=[video_part, SCENE_DETECTION_PROMPT + (
+            f"\nSource duration measured by the media probe: {duration_seconds:.6f} seconds."
+            if duration_seconds else ""
+        )],
         config=types.GenerateContentConfig(
+            system_instruction=EVIDENCE_INSTRUCTION,
             response_mime_type="application/json",
             response_schema=SceneDetectionResult,
         ),
     )
 
-    usage = {}
-    if response.usage_metadata:
-        usage = {
-            "input_tokens": response.usage_metadata.prompt_token_count or 0,
-            "output_tokens": response.usage_metadata.candidates_token_count or 0,
-        }
-
-    result = SceneDetectionResult.model_validate_json(response.text)
+    usage = extract_usage(response, settings.gemini_analysis_model, "scene_detection")
+    result = validate_scenes(
+        SceneDetectionResult.model_validate_json(response_text(response)), duration_seconds,
+    )
     logger.info(f"Stage 1 complete: {result.total_scenes} scenes detected")
     return result, usage
 
@@ -70,15 +64,15 @@ async def run_scene_detection(
 async def run_shot_detection(
     file_uri: str,
     mime_type: str,
-    scene_outline: "SceneDetectionResult.scenes[0]",
+    scene_outline: SceneOutline,
     shot_number_offset: int,
     fps: float,
     api_key: str | None = None,
 ) -> tuple[list[Shot], dict]:
-    """Stage 2: detect every shot within a single scene at high fps.
+    """Stage 2: estimate shots and evidence within a bounded scene.
 
     Uses VideoMetadata to clip the video to just this scene and sample at
-    the requested fps for accurate cut detection.
+    the requested fps. Model boundaries remain approximate.
 
     Returns (shots_list, usage_dict).
     """
@@ -98,34 +92,26 @@ async def run_shot_detection(
     video_part = types.Part(
         file_data=types.FileData(file_uri=file_uri, mime_type=mime_type),
         video_metadata=types.VideoMetadata(
-            start_offset=f"{int(start_secs)}s",
-            end_offset=f"{int(end_secs)}s",
+            start_offset=clip_offset(start_secs),
+            end_offset=clip_offset(end_secs),
             fps=fps,
         ),
     )
 
     response = await asyncio.to_thread(
         client.models.generate_content,
-        model="gemini-2.5-flash",
+        model=settings.gemini_analysis_model,
         contents=[video_part, prompt],
         config=types.GenerateContentConfig(
+            system_instruction=EVIDENCE_INSTRUCTION,
             response_mime_type="application/json",
             response_schema=ShotDetectionResult,
         ),
     )
 
-    usage = {}
-    if response.usage_metadata:
-        usage = {
-            "input_tokens": response.usage_metadata.prompt_token_count or 0,
-            "output_tokens": response.usage_metadata.candidates_token_count or 0,
-        }
-
-    result = ShotDetectionResult.model_validate_json(response.text)
-
-    # Re-number shots sequentially using the global offset
-    for i, shot in enumerate(result.shots):
-        shot.shot_number = shot_number_offset + i
+    usage = extract_usage(response, settings.gemini_analysis_model, "shot_analysis")
+    result = ShotDetectionResult.model_validate_json(response_text(response))
+    result.shots = validate_shots(result.shots, start_secs, end_secs, shot_number_offset)
 
     logger.info(
         f"Stage 2 complete: scene {scene_outline.scene_number} → {len(result.shots)} shots"
@@ -162,7 +148,7 @@ async def run_flash_pass(
             total_input += s2_usage.get("input_tokens", 0)
             total_output += s2_usage.get("output_tokens", 0)
         except Exception as e:
-            logger.error(f"Shot detection failed for scene {outline.scene_number}: {e}")
+            logger.warning("Shot detection failed for scene %s (%s)", outline.scene_number, type(e).__name__)
             shots = []
 
         scenes.append(Scene(
@@ -180,7 +166,11 @@ async def run_flash_pass(
         total_scenes=len(scenes),
         total_shots=shot_counter - 1,
         scenes=scenes,
+        analysis_warnings=scenes_result.analysis_warnings,
+        model=settings.gemini_analysis_model,
     )
+    if flash_analysis.total_shots == 0:
+        raise ValueError("No valid shot metadata was generated")
     combined_usage = {"input_tokens": total_input, "output_tokens": total_output}
     logger.info(
         f"Flash pass complete: {flash_analysis.total_scenes} scenes, "

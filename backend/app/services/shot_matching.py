@@ -1,10 +1,13 @@
 import asyncio
 import json
 import logging
+import math
 
 from google.genai import types
 
+from app.config import settings
 from app.services.gemini_client import get_client
+from app.services.analysis_support import EVIDENCE_INSTRUCTION, extract_usage, response_text
 
 logger = logging.getLogger(__name__)
 
@@ -56,21 +59,34 @@ async def run_shot_matching(
 
     response = await asyncio.to_thread(
         client.models.generate_content,
-        model="gemini-2.5-flash",
+        model=settings.gemini_analysis_model,
         contents=[video_part, prompt],
         config=types.GenerateContentConfig(
+            system_instruction=EVIDENCE_INSTRUCTION,
             response_mime_type="application/json",
         ),
     )
 
-    usage = {}
-    if response.usage_metadata:
-        usage = {
-            "input_tokens": response.usage_metadata.prompt_token_count or 0,
-            "output_tokens": response.usage_metadata.candidates_token_count or 0,
-        }
-
-    result = json.loads(response.text)
-    matches = result.get("matches", [])
+    usage = extract_usage(response, settings.gemini_analysis_model, "shot_matching")
+    result = json.loads(response_text(response))
+    ids = {shot["shot_number"] for shot in shots}
+    matches, seen = [], set()
+    for match in result.get("matches", []):
+        if not isinstance(match, dict):
+            continue
+        a, b = match.get("shot_a"), match.get("shot_b")
+        score = match.get("similarity")
+        if not isinstance(a, int) or not isinstance(b, int) or a not in ids or b not in ids or a == b:
+            continue
+        if not isinstance(score, (int, float)) or not math.isfinite(score) or not 0.5 <= score <= 1:
+            continue
+        pair = tuple(sorted((a, b)))
+        if pair in seen:
+            continue
+        seen.add(pair)
+        reasons = [str(r) for r in match.get("reasons", []) if isinstance(r, str)]
+        matches.append({"shot_a": a, "shot_b": b, "similarity": score, "reasons": reasons,
+                        "score_basis": "model_estimate_uncalibrated"})
+    matches = sorted(matches, key=lambda item: item["similarity"], reverse=True)[:20]
     logger.info(f"Shot matching found {len(matches)} pairs")
     return matches, usage

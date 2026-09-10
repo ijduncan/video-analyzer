@@ -129,7 +129,7 @@ function ApiKeyModal({ onClose }: { onClose: () => void }) {
         </div>
 
         <p className="text-xs text-zinc-400 mb-3">
-          Enter your Google AI Studio API key to use Video Analyzer. Your key is stored locally in your browser and never sent to any server other than Google's API.
+          Enter your Google AI Studio API key to use Video Analyzer. Your key is stored in this browser and sent to this application's backend, which calls Google's API. A server-configured key can also be used.
         </p>
 
         <div className="space-y-3">

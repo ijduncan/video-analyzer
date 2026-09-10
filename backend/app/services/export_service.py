@@ -1,6 +1,11 @@
-import csv
 import io
-import json
+import re
+import xml.etree.ElementTree as ET
+from decimal import Decimal, ROUND_HALF_UP
+from fractions import Fraction
+from urllib.parse import quote
+
+from app.services.library_export import export_library, iter_shots, job_data, parse_seconds, segment_times, source_filename
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -10,46 +15,11 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 
 
 def export_json(job) -> str:
-    data = {
-        "filename": job.filename,
-        "flash_analysis": job.flash_result,
-        "deep_analysis": job.deep_results,
-        "summary": job.summary,
-        "cost_estimate": job.cost_estimate,
-    }
-    return json.dumps(data, indent=2)
+    return export_library(job, "json")[0]
 
 
 def export_csv(job) -> str:
-    output = io.StringIO()
-    writer = csv.writer(output)
-
-    # Header
-    writer.writerow([
-        "Scene", "Scene Title", "Shot", "Start", "End",
-        "Shot Type", "Camera Movement", "Visual Description",
-        "Audio Notes", "Subjects", "Dominant Colors", "Mood",
-    ])
-
-    if job.flash_result and "scenes" in job.flash_result:
-        for scene in job.flash_result["scenes"]:
-            for shot in scene.get("shots", []):
-                writer.writerow([
-                    scene.get("scene_number", ""),
-                    scene.get("scene_title", ""),
-                    shot.get("shot_number", ""),
-                    shot.get("start_time", ""),
-                    shot.get("end_time", ""),
-                    shot.get("shot_type", ""),
-                    shot.get("camera_movement", ""),
-                    shot.get("visual_description", ""),
-                    shot.get("audio_notes", ""),
-                    "; ".join(shot.get("subjects", [])),
-                    "; ".join(shot.get("dominant_colors", [])),
-                    shot.get("mood", ""),
-                ])
-
-    return output.getvalue()
+    return export_library(job, "csv")[0]
 
 
 def export_markdown(job) -> str:
@@ -101,101 +71,147 @@ def export_markdown(job) -> str:
     return "\n".join(lines)
 
 
-def _time_to_timecode(time_str: str, fps: int = 24) -> str:
-    """Convert MM:SS to HH:MM:SS:FF timecode."""
-    parts = time_str.split(":")
-    if len(parts) == 2:
-        mins, secs = int(parts[0]), int(parts[1])
-        hours = mins // 60
-        mins = mins % 60
-    elif len(parts) == 3:
-        hours, mins, secs = int(parts[0]), int(parts[1]), int(parts[2])
-    else:
-        hours, mins, secs = 0, 0, 0
-    return f"{hours:02d}:{mins:02d}:{secs:02d}:00"
+def _source_timing(data: dict) -> tuple[int, int, Decimal]:
+    technical = data.get("technical") or {}
+    if technical.get("variable_frame_rate") or technical.get("is_vfr"):
+        raise ValueError("NLE export does not support variable frame rate media; use JSON, CSV or XMP")
+    if technical.get("drop_frame") or str(technical.get("timecode_mode", "")).upper() in {"DF", "DROP", "DROP-FRAME"}:
+        raise ValueError("NLE export does not support drop-frame timecode; use JSON, CSV or XMP")
+    raw_rate = technical.get("frame_rate_fraction") or technical.get("frame_rate")
+    try:
+        rate = Fraction(str(raw_rate))
+    except (ValueError, ZeroDivisionError) as exc:
+        raise ValueError("NLE export requires a known source frame rate") from exc
+    if rate <= 0:
+        raise ValueError("NLE export requires a known positive source frame rate")
+    if rate.denominator != 1:
+        raise ValueError("NLE export does not yet support fractional frame rates; use JSON, CSV or XMP")
+    fps = rate.numerator
+    if fps not in {24, 25, 30, 48, 50, 60}:
+        raise ValueError("Unsupported source frame rate for NLE export")
+    timecode = str(technical.get("source_timecode") or "")
+    if ";" in timecode:
+        raise ValueError("NLE export does not support drop-frame timecode; use JSON, CSV or XMP")
+    match = re.fullmatch(r"(\d{2}):(\d{2}):(\d{2}):(\d{2})", timecode)
+    if not match:
+        raise ValueError("NLE export requires a known source timecode in HH:MM:SS:FF format")
+    hours, minutes, seconds, frames = map(int, match.groups())
+    if hours >= 24 or minutes >= 60 or seconds >= 60 or frames >= fps:
+        raise ValueError("Source timecode is invalid for the source frame rate")
+    source_start = ((hours * 60 + minutes) * 60 + seconds) * fps + frames
+    duration = parse_seconds(technical.get("duration_seconds"))
+    if duration <= 0:
+        raise ValueError("NLE export requires a known positive source duration")
+    return fps, source_start, duration
 
 
-def _time_to_seconds(time_str: str) -> int:
-    parts = time_str.split(":")
-    if len(parts) == 2:
-        return int(parts[0]) * 60 + int(parts[1])
-    if len(parts) == 3:
-        return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-    return 0
+def _frames(seconds: Decimal, fps: int) -> int:
+    return int((seconds * fps).quantize(Decimal(1), rounding=ROUND_HALF_UP))
 
 
-def _xml_escape(s: str) -> str:
-    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+def _frame_timecode(frame: int, fps: int) -> str:
+    seconds, frames = divmod(frame, fps)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours >= 24:
+        raise ValueError("NLE export would cross the 24-hour timecode boundary")
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}:{frames:02d}"
+
+
+def _nle_shots(data: dict, fps: int, duration: Decimal):
+    rows = []
+    for scene, shot, reviewed in iter_shots(data):
+        start, end = segment_times(shot, duration)
+        first, last = _frames(start, fps), _frames(end, fps)
+        if last <= first:
+            raise ValueError("A shot is shorter than one source frame after rounding")
+        rows.append((first, last, scene, shot, reviewed))
+    if not rows:
+        raise ValueError("No timed shots are available to export")
+    return sorted(rows, key=lambda item: item[0])
+
+
+def _one_line(value) -> str:
+    return " ".join(str(value or "").split())
 
 
 def export_edl(job) -> str:
-    """Export as CMX 3600 EDL format."""
-    lines = [
-        f"TITLE: {job.filename}",
-        "FCM: NON-DROP FRAME",
-        "",
-    ]
-    event_num = 1
-    if job.flash_result and "scenes" in job.flash_result:
-        for scene in job.flash_result["scenes"]:
-            for shot in scene.get("shots", []):
-                src_in = _time_to_timecode(shot.get("start_time", "0:00"))
-                src_out = _time_to_timecode(shot.get("end_time", "0:00"))
-                lines.append(
-                    f"{event_num:03d}  AX       V     C        "
-                    f"{src_in} {src_out} {src_in} {src_out}"
-                )
-                lines.append(f"* SHOT TYPE: {shot.get('shot_type', '')}")
-                lines.append(f"* CAMERA: {shot.get('camera_movement', '')}")
-                lines.append(f"* FROM CLIP NAME: Scene {scene.get('scene_number', '')} - {scene.get('scene_title', '')}")
-                desc = shot.get("visual_description", "")
-                if desc:
-                    lines.append(f"* COMMENT: {desc[:120]}")
-                lines.append("")
-                event_num += 1
+    """CMX3600 video-only selects, with verified non-drop source timing."""
+    data = job_data(job)
+    fps, source_start, duration = _source_timing(data)
+    if fps not in {24, 25, 30}:
+        raise ValueError("CMX3600 export supports only 24, 25 or 30 fps non-drop sources")
+    shots = _nle_shots(data, fps, duration)
+    if len(shots) > 999:
+        raise ValueError("CMX3600 export is limited to 999 events")
+    filename = _one_line(source_filename(data.get("filename")))
+    lines = [f"TITLE: {filename}", "FCM: NON-DROP FRAME", f"* SOURCE FRAME RATE: {fps}",
+             "* VIDEO ONLY; SOURCE MEDIA IS NOT INCLUDED",
+             "* ESTIMATED ANALYSIS BOUNDARIES ROUNDED TO THE NEAREST SOURCE FRAME", ""]
+    record = 0
+    for index, (first, last, scene, shot, reviewed) in enumerate(shots, 1):
+        count = last - first
+        lines.append(f"{index:03d}  AX       V     C        "
+                     f"{_frame_timecode(source_start + first, fps)} {_frame_timecode(source_start + last, fps)} "
+                     f"{_frame_timecode(record, fps)} {_frame_timecode(record + count, fps)}")
+        lines.extend([f"* FROM CLIP NAME: {filename}",
+                      f"* COMMENT: {_one_line(shot.get('visual_description'))}",
+                      f"* SHOT TYPE: {_one_line(shot.get('shot_type'))}",
+                      f"* CAMERA: {_one_line(shot.get('camera_movement'))}"])
+        if reviewed.get("notes"):
+            lines.append(f"* REVIEWED NOTES: {_one_line(reviewed['notes'])}")
+        lines.append("")
+        record += count
     return "\n".join(lines)
 
 
 def export_fcpxml(job) -> str:
-    """Export as Final Cut Pro XML (FCPXML v1.11)."""
-    filename = _xml_escape(job.filename or "Untitled")
-    clips = []
-    offset = 0
-    if job.flash_result and "scenes" in job.flash_result:
-        for scene in job.flash_result["scenes"]:
-            for shot in scene.get("shots", []):
-                start_s = _time_to_seconds(shot.get("start_time", "0:00"))
-                end_s = _time_to_seconds(shot.get("end_time", "0:00"))
-                dur = max(end_s - start_s, 1)
-                name = _xml_escape(f"S{scene.get('scene_number','')}_Shot{shot.get('shot_number','')}")
-                note = _xml_escape(f"{shot.get('shot_type','')} | {shot.get('camera_movement','')} — {shot.get('visual_description','')}")
-                clips.append(
-                    f'                        <clip name="{name}" offset="{offset * 24}/24s" '
-                    f'duration="{dur * 24}/24s" start="{start_s * 24}/24s">\n'
-                    f'                            <note>{note}</note>\n'
-                    f'                        </clip>'
-                )
-                offset += dur
-    total_dur = max(offset, 1)
-    clips_str = "\n".join(clips)
-    return f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE fcpxml>
-<fcpxml version="1.11">
-    <resources>
-        <format id="r1" frameDuration="1/24s" width="1920" height="1080"/>
-    </resources>
-    <library>
-        <event name="{filename} Analysis">
-            <project name="{filename} Shot List">
-                <sequence format="r1" duration="{total_dur * 24}/24s">
-                    <spine>
-{clips_str}
-                    </spine>
-                </sequence>
-            </project>
-        </event>
-    </library>
-</fcpxml>"""
+    """FCPXML 1.11 media references. Place original media beside XML or relink.
+
+    Uses real asset-clip references and source dimensions/timing. No source
+    path is leaked, no media is copied, and editor import is not assumed.
+    Relative media URLs are documented by Apple:
+    https://developer.apple.com/documentation/professional-video-applications/media-rep
+    """
+    data = job_data(job)
+    fps, source_start, duration = _source_timing(data)
+    technical = data.get("technical") or {}
+    width, height = technical.get("width"), technical.get("height")
+    if not isinstance(width, int) or not isinstance(height, int) or width <= 0 or height <= 0:
+        raise ValueError("FCPXML requires known positive source width and height")
+    if technical.get("rotation", 0) not in (0, None):
+        raise ValueError("FCPXML export of rotated media requires a verified orientation mapping; use JSON or XMP")
+    shots = _nle_shots(data, fps, duration)
+    _frame_timecode(source_start + _frames(duration, fps), fps)
+    filename = source_filename(data.get("filename"))
+    time = lambda frames: f"{frames}/{fps}s"
+    root = ET.Element("fcpxml", version="1.11")
+    root.append(ET.Comment("Media reference export. Place the original file beside this XML or relink. Analysis boundaries are estimates rounded to source frames."))
+    resources = ET.SubElement(root, "resources")
+    ET.SubElement(resources, "format", id="r1", frameDuration=f"1/{fps}s", width=str(width), height=str(height))
+    asset = ET.SubElement(resources, "asset", id="r2", name=filename, start=time(source_start),
+                          duration=time(_frames(duration, fps)), hasVideo="1", format="r1",
+                          hasAudio="1" if technical.get("has_audio") else "0")
+    ET.SubElement(asset, "media-rep", kind="original-media", src=quote("./" + filename, safe="/"))
+    library = ET.SubElement(root, "library")
+    event = ET.SubElement(library, "event", name=f"{filename} Analysis")
+    project = ET.SubElement(event, "project", name=f"{filename} Shot List")
+    total = sum(last - first for first, last, *_ in shots)
+    sequence = ET.SubElement(project, "sequence", format="r1", duration=time(total), tcStart="0s", tcFormat="NDF")
+    spine = ET.SubElement(sequence, "spine")
+    record = 0
+    for first, last, scene, shot, reviewed in shots:
+        count = last - first
+        clip = ET.SubElement(spine, "asset-clip", ref="r2", name=f"S{scene.get('scene_number', '')}_Shot{shot.get('shot_number', '')}",
+                             offset=time(record), start=time(source_start + first), duration=time(count), tcFormat="NDF")
+        ET.SubElement(clip, "note").text = _one_line(
+            f"{shot.get('shot_type', '')} | {shot.get('camera_movement', '')} | "
+            f"{shot.get('visual_description', '')} | Reviewed notes: {reviewed.get('notes', '')}")
+        for tag in reviewed.get("tags") or []:
+            ET.SubElement(clip, "keyword", start=time(source_start + first), duration=time(count), value=str(tag))
+        record += count
+    ET.indent(root)
+    return '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE fcpxml>\n' + ET.tostring(root, encoding="unicode")
 
 
 def export_pdf(job) -> bytes:

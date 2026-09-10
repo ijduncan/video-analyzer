@@ -1,45 +1,30 @@
-SHOT_DETECTION_PROMPT = """You are a professional video analyst performing a frame-accurate shot breakdown.
+SHOT_DETECTION_PROMPT = """Create a useful editorial shot log with evidence for this video segment.
+Scene {scene_number}: "{scene_title}" covers {start_time} to {end_time} on the ORIGINAL source timeline.
+Use source timestamps within that range; do not reset the time origin to zero.
 
-You are analyzing Scene {scene_number}: "{scene_title}" — this segment runs from {start_time} to {end_time} in the original video. The clip you are seeing covers this segment.
+Identify visible camera cuts and transitions. A shot is a continuous view between edits; a change in subject
+within one continuous recording does not create another shot. For dissolves, estimate the transition midpoint.
+Sampling limits what can be seen. Do not invent cuts or claim that boundaries are frame accurate.
 
-Your task: Identify EVERY individual camera shot within this clip.
+For each shot, beginning with shot number {shot_number_offset}, return:
+- start_time/end_time: source-relative MM:SS.mmm or HH:MM:SS.mmm, end strictly after start.
+- shot_type: e.g. wide, medium, close-up, extreme close-up, over-the-shoulder, POV, aerial, insert, two-shot.
+- camera_movement: visible movement (static, pan, tilt, tracking, handheld, zoom); avoid guessing equipment.
+- visual_description: precise visible subjects, composition, activity and setting.
+- subjects, actions: specific observable objects/people and what happens.
+- tags: 5-12 concise searchable concepts including subject, action, setting, style and editorial qualities.
+- dominant_colors and mood: visible palette and tentative creative tone, not a person's hidden mental state.
+- location: descriptive setting; name a place only when explicit evidence identifies it.
+- visible_text: exact readable on-screen words; omit illegible text instead of guessing.
+- logos: clearly identifiable brand/logo names only; leave empty when uncertain.
+- audio_notes: actually audible music, dialogue, ambient sound or silence.
+- transcript: only intelligible words actually SPOKEN, verbatim; never copy visible captions as speech.
+- evidence: short directly observable supporting details with modality (visual/audio/both),
+  description, start_time and end_time within the shot. These are observations, not reasoning.
+- confidence: an optional 0-1 uncalibrated estimate; null when unsure.
+- analysis_warnings: ambiguous details, unexamined intervals or uncertain cuts.
 
-DEFINITION — A SHOT is any single, uninterrupted camera recording. A new shot begins at:
-- A hard cut (instantaneous transition between two different angles/clips)
-- A dissolve, cross-fade, or wipe (mark the transition midpoint as the cut)
-- Any other visual transition between distinct recordings
-
-Do NOT be conservative — if you see a cut, mark it. It is better to have slightly too many shots than to miss cuts.
-
-For each shot provide:
-- shot_number: sequential integer (starting from {shot_number_offset})
-- start_time: MM:SS timestamp in the ORIGINAL video (not relative to this clip)
-- end_time: MM:SS timestamp in the ORIGINAL video
-- shot_type: WS (Wide Shot), MS (Medium Shot), CU (Close-Up), ECU (Extreme Close-Up), OTS (Over-the-Shoulder), POV, Aerial/Drone, Establishing, Insert, Two-Shot, or describe other types
-- camera_movement: Static, Pan Left/Right, Tilt Up/Down, Dolly In/Out, Tracking, Crane, Handheld, Steadicam, Zoom In/Out, Whip Pan, or Combination
-- visual_description: One precise sentence describing what is visible in this shot
-- audio_notes: What is heard — dialogue (paraphrase key words), music style/mood, sound effects, ambient sound, or silence
-- subjects: List of main subjects/people/objects visible
-- dominant_colors: List of 2-4 dominant colors in the frame
-- mood: Single word describing the emotional tone
-
-Return ONLY a JSON object:
-{{
-  "shots": [
-    {{
-      "shot_number": {shot_number_offset},
-      "start_time": "MM:SS",
-      "end_time": "MM:SS",
-      "shot_type": "string",
-      "camera_movement": "string",
-      "visual_description": "string",
-      "audio_notes": "string",
-      "subjects": ["string"],
-      "dominant_colors": ["string"],
-      "mood": "string"
-    }}
-  ]
-}}
-
-Every frame of this clip must be accounted for within a shot. Use MM:SS format. Timestamps must match the ORIGINAL video timeline (offset from {start_time}).
+Keep shots in chronological order without overlap. Do not manufacture observations to fill a coverage gap.
+Empty values are appropriate for absent or unknown attributes. All generated metadata remains unreviewed.
+Return the provided JSON schema.
 """

@@ -4,7 +4,9 @@ import logging
 
 from google.genai import types
 
+from app.config import settings
 from app.services.gemini_client import get_client
+from app.services.analysis_support import EVIDENCE_INSTRUCTION, extract_usage, response_text
 
 logger = logging.getLogger(__name__)
 
@@ -27,20 +29,17 @@ async def run_custom_pass(
 
     response = await asyncio.to_thread(
         client.models.generate_content,
-        model="gemini-2.5-pro",
+        model=settings.gemini_deep_model,
         contents=[video_part, text],
         config=types.GenerateContentConfig(
+            system_instruction=EVIDENCE_INSTRUCTION,
             response_mime_type="application/json",
         ),
     )
 
-    usage = {}
-    if response.usage_metadata:
-        usage = {
-            "input_tokens": response.usage_metadata.prompt_token_count or 0,
-            "output_tokens": response.usage_metadata.candidates_token_count or 0,
-        }
-
-    result = json.loads(response.text)
+    usage = extract_usage(response, settings.gemini_deep_model, "custom")
+    result = json.loads(response_text(response))
+    if not isinstance(result, dict):
+        raise ValueError("Custom analysis must return a JSON object")
     logger.info("Custom pass complete")
     return result, usage

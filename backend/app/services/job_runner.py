@@ -1,0 +1,90 @@
+"""In-process background jobs with durable progress and explicit restart recovery."""
+import asyncio
+import json
+import logging
+from datetime import datetime, timezone
+from app.config import settings
+from app.services.analyzer import run_analysis
+from app.services.file_manager import ensure_remote_file
+from app.services.job_store import get_job, update_job
+
+logger = logging.getLogger(__name__)
+_tasks: dict[str, asyncio.Task] = {}
+_gate: asyncio.Semaphore | None = None
+
+
+async def _run(job_id, request, api_key):
+    global _gate
+    if _gate is None:
+        _gate = asyncio.Semaphore(max(1, settings.max_concurrent_analyses))
+    try:
+        async with _gate:
+            job = get_job(job_id)
+            if job is None:
+                return
+            update_job(job_id, status='analyzing', error=None, warnings=[])
+            await ensure_remote_file(job, api_key)
+            job = get_job(job_id)
+            async for event in run_analysis(job, request.fps, request.mode,
+                    custom_prompt=request.custom_prompt.strip() or None, api_key=api_key):
+                data = json.loads(event.get('data', '{}'))
+                kind = event.get('event')
+                if kind == 'pass_start':
+                    update_job(job_id, progress=data.get('name', 'Analyzing'))
+                elif kind == 'scene_start':
+                    update_job(job_id, progress=f"Analyzing scene {data.get('scene')} of {data.get('total')}")
+                elif kind == 'shot_detection_progress':
+                    update_job(job_id, progress=f"Logging shots: scene {data.get('scene')} of {data.get('total')}")
+                elif kind == 'analysis_complete':
+                    update_job(job_id, progress='Analysis complete; ready for review')
+                elif kind == 'error_event' and data.get('recoverable'):
+                    latest = get_job(job_id)
+                    warning = data.get('message', 'Partial analysis failure')
+                    if latest and warning not in latest.warnings:
+                        update_job(job_id, warnings=latest.warnings + [warning])
+    except asyncio.CancelledError:
+        update_job(job_id, status='error', error='Analysis cancelled. Previous results preserved.', progress='Cancelled')
+        raise
+    except Exception as exc:
+        logger.warning('Analysis job failed (%s)', type(exc).__name__)
+        # Avoid including provider exception payloads, which can contain URLs/credentials.
+        message = str(exc) if isinstance(exc, ValueError) else f'Analysis failed ({type(exc).__name__}). Check provider access and retry.'
+        update_job(job_id, status='error', error=message, progress='Analysis failed')
+
+
+def _finished(job_id, task):
+    # A coroutine cancelled before its first step never reaches _run's handlers.
+    # Only the registered task may clear/update this job, so an older callback
+    # cannot erase a newer task created for the same asset.
+    if _tasks.get(job_id) is not task:
+        return
+    _tasks.pop(job_id, None)
+    if task.cancelled():
+        job = get_job(job_id)
+        if job and job.status in ('queued', 'analyzing'):
+            update_job(job_id, status='error', error='Analysis cancelled. Previous results preserved.', progress='Cancelled')
+    elif task.exception() is not None:
+        logger.warning('Analysis task ended unexpectedly (%s)', type(task.exception()).__name__)
+
+
+def start_job(job_id, request, api_key):
+    task = asyncio.create_task(_run(job_id, request, api_key))
+    _tasks[job_id] = task
+    task.add_done_callback(lambda completed: _finished(job_id, completed))
+
+
+def cancel_job(job_id):
+    task = _tasks.get(job_id)
+    if task is None or task.done():
+        return False
+    return task.cancel()
+
+
+async def shutdown_jobs():
+    global _gate
+    running = list(_tasks.values())
+    for task in running:
+        task.cancel()
+    if running:
+        await asyncio.gather(*running, return_exceptions=True)
+    _gate = None

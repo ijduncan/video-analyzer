@@ -80,7 +80,7 @@ export function FullSummary() {
             <div className="bg-zinc-900 rounded p-2">
               <div className="text-zinc-500">Est. Cost</div>
               <div className="font-mono text-zinc-300">
-                ${costEstimate.estimated_cost_usd.toFixed(4)}
+                {costEstimate.estimated_cost_usd == null ? 'Unavailable' : `$${costEstimate.estimated_cost_usd.toFixed(4)}`}
               </div>
             </div>
           </div>
