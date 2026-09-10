@@ -1,12 +1,15 @@
 import asyncio
 import math
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, model_validator
 
 from app.routers.library import require_job
 from app.services import visual_index
+from app.services import composition_index
+from app.dependencies import get_api_key
+from app.config import settings
 
 router = APIRouter(prefix='/api/visual')
 
@@ -21,6 +24,7 @@ class MatchRequest(BaseModel):
     color: float = Field(default=1, ge=0, le=1, allow_inf_nan=False)
     region: tuple[float, float, float, float] | None = None
     limit: int = Field(default=12, ge=1, le=48)
+    prepare_composition: bool = True
 
     @model_validator(mode='after')
     def valid(self):
@@ -69,7 +73,7 @@ async def get_frame(job_id: str, shot_number: int = Query(ge=1), seconds: float 
 
 
 @router.post('/{job_id}/search')
-async def find_matches(job_id: str, body: MatchRequest):
+async def find_matches(job_id: str, body: MatchRequest, api_key: str | None = Depends(get_api_key)):
     job = require_job(job_id)
     targets = [require_job(ident) for ident in dict.fromkeys(body.target_ids)]
     try:
@@ -79,13 +83,31 @@ async def find_matches(job_id: str, body: MatchRequest):
         source = await asyncio.to_thread(visual_index.features, await visual_index.frame(job, key, body.seconds))
         if not source['usable']:
             raise ValueError('This frame is nearly blank. Choose a frame with visible detail.')
-        if body.region:
+        if body.region and body.shape:
             x, y, w, h = body.region
             if not any(x <= s['box'][0] + s['box'][2] / 2 <= x + w and y <= s['box'][1] + s['box'][3] / 2 <= y + h for s in source['shapes']):
                 raise ValueError('No clear contour was detected in this region. Try a wider region or the whole frame.')
+        profile = None
+        if body.composition:
+            if body.prepare_composition:
+                if not (api_key or settings.google_api_key):
+                    raise HTTPException(400, 'Composition matching uses Gemini. Add a key in Settings first.')
+                profile = await composition_index.ensure(job, key, body.seconds, api_key)
+            else:
+                # Polls only read saved results: never initiate provider calls or retry failures.
+                profile = composition_index.cached(job, key).get(round(body.seconds * 1000))
+            if profile and (profile['kind'] == 'unclear' or not profile['focal_point']):
+                raise ValueError('No clear focal subject was identified in this frame. Choose another frame or use Shape and Color.')
+            if body.prepare_composition:
+                for target in targets:
+                    composition_index.start(target, api_key)
         result = await asyncio.to_thread(visual_index.search, source, job_id, body.shot_number, targets,
-            {'shape': body.shape, 'composition': body.composition, 'color': body.color}, body.region, body.limit)
+            {'shape': body.shape, 'composition': body.composition, 'color': body.color}, body.region, body.limit, profile)
         visual_index.validate_frame(require_job(job_id), body.shot_number, body.seconds, key)
         return result
     except ValueError as exc:
         raise HTTPException(409, str(exc))
+    except Exception as exc:
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(502, 'Gemini composition analysis could not finish. Check your key/quota and try again; saved frames are retained.')

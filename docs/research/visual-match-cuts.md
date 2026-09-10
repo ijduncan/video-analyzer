@@ -55,7 +55,7 @@ The low-resolution visual frame floor is 66 tokens/frame. Removing audio therefo
 
 ## Limits of the current application
 
-- Update: the app now has an experimental local **Match cuts** workspace with per-project frame indexes, contour/composition/color ranking, source regions, A/B previews, and cut-pair JSON export. It samples five points per shot and has no motion scoring or learned embedding retrieval yet. The implementation is separate from the Gemini pass below; see [current workflow and verification](../VISUAL_MATCH_CUTS.md).
+- Update: the app now has an experimental local **Match cuts** workspace with per-project frame indexes, local contour/color ranking and cached Gemini subject/framing profiles for composition, source regions, A/B previews, and cut-pair JSON export. It samples five points per shot and has no motion scoring or learned embedding retrieval yet. The implementation is separate from the Gemini pass below; see [current workflow and verification](../VISUAL_MATCH_CUTS.md).
 
 - The current related-shot pass returns up to 20 model-suggested pairs within one film. It does not implement the geometric, motion, embedding, or cross-library index proposed here.
 - Shot indexing now publishes results in 30-second processing sections, skipping the initial whole-film scene-detection request when source duration is known. Full analysis still adds detailed section passes, whole-video summary and related-shot matching. The one-pass estimates above are not the cost of that entire pipeline. See [progressive analysis](../PROGRESSIVE_ANALYSIS.md) for measured first-result latency and remaining limits.

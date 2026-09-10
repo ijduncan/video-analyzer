@@ -57,14 +57,12 @@ def compare(source, target, weights, region=None):
             form *= math.exp(-2 * abs(a['roundness'] - b['roundness']) - abs(a['fill'] - b['fill']))
             form *= math.exp(-abs(math.log(a['aspect'] / b['aspect'])))
             position = math.exp(-3 * sum(abs(v - u) for v, u in zip(a['box'], b['box'])))
-            rank = weights['shape'] * form + weights['composition'] * position
+            rank = form  # Contours rank shape only; semantic composition is evaluated separately.
             if best is None or rank > best[0]:
                 best = (rank, form, position, a['box'], b['box'])
     shape = best[1] if best else 0.
-    if best:
-        composition = .5 * composition + .5 * best[2]
     scores = {'shape': shape, 'composition': composition, 'color': color}
     total = sum(weights.values())
     score = sum(scores[k] * weights[k] for k in scores) / total
     return {'score': round(score, 4), 'scores': {k: round(v, 4) for k, v in scores.items()},
-            'source_box': best[3] if best else None, 'target_box': best[4] if best else None}
+            'source_box': best[3] if best and weights['shape'] else None, 'target_box': best[4] if best and weights['shape'] else None}

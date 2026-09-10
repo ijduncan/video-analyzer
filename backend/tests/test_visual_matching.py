@@ -31,7 +31,7 @@ def test_shape_matches_different_color_and_composition_distinguishes_position():
     assert compare(source, source, weights)['score'] > compare(source, moved, weights)['score']
     weights = {'shape': 0, 'composition': 0, 'color': 1}
     assert compare(source, source, weights)['score'] > compare(source, circle, weights)['score']
-    assert compare(source, circle, weights)['source_box'] is not None
+    assert compare(source, circle, weights)['source_box'] is None  # Color-only results must not show contour boxes.
 
 
 def test_blank_and_region():
@@ -81,7 +81,7 @@ def test_index_search_resume_and_stale_guards(client, visual_asset):
     state = wait_index(client, ident)
     assert state['status'] == 'complete'
     assert state['indexed'] == 10
-    payload = {'shot_number': 1, 'seconds': 1.5, 'revision': state['revision'], 'target_ids': [ident]}
+    payload = {'shot_number': 1, 'seconds': 1.5, 'revision': state['revision'], 'target_ids': [ident], 'composition': 0}
     response = client.post(f'/api/visual/{ident}/search', json=payload)
     assert response.status_code == 200, response.text
     matches = response.json()['matches']
@@ -100,7 +100,7 @@ def test_index_search_resume_and_stale_guards(client, visual_asset):
 def test_validation_and_cancel(client, visual_asset):
     ident = visual_asset.job_id
     revision = client.get(f'/api/visual/{ident}/index').json()['revision']
-    base = {'shot_number': 1, 'seconds': 1, 'revision': revision, 'target_ids': [ident]}
+    base = {'shot_number': 1, 'seconds': 1, 'revision': revision, 'target_ids': [ident], 'composition': 0}
     for changes in [{'target_ids': []}, {'shape': 0, 'composition': 0, 'color': 0}, {'region': [0, 0, 3, 1]}]:
         assert client.post(f'/api/visual/{ident}/search', json={**base, **changes}).status_code == 422
     for changes in [{'seconds': 100}, {'shot_number': 100}, {'region': [0, 0, .1, .1]}]:
