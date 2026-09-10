@@ -9,7 +9,9 @@ from app.dependencies import get_api_key
 from app.models.library import AssetMetadata, ShotAnnotation, AnalyzeRequest
 from app.services.job_store import get_job, list_jobs, update_job, claim_analysis
 from app.services.job_runner import start_job, cancel_job
-from app.services.library_service import asset_view, shot_views, search_score
+from app.services.library_service import (
+    asset_view, shot_views, search_score, match_shot, public_search_metadata, public_transcript_segments,
+)
 
 router = APIRouter(prefix='/api/library')
 
@@ -46,11 +48,15 @@ async def library(q: str = Query(default='', max_length=500), project: str = '',
     matched = []
     for job in _filtered(jobs, project, review_status, tag, rights_status, collection):
         public = asset_view(job)
-        score = search_score(q, [job.filename, public['metadata'], job.summary, job.flash_result, job.deep_results, job.shot_annotations])
+        score = search_score(q, [job.filename, public['metadata'], job.summary, job.flash_result,
+                                 job.deep_results, job.shot_annotations,
+                                 public_search_metadata(job.custom_result), public_transcript_segments(job)])
         if score >= 0:
             if q:
-                matching_shot = next((s for s in shot_views(job) if search_score(q, s) >= 0), None)
-                public['match_context'] = matching_shot.get('visual_description', '') if matching_shot else 'Matched asset metadata'
+                matching_shot = next((match for shot in shot_views(job)
+                                      if (match := match_shot(q, shot))[0] >= 0), None)
+                public['match_context'] = matching_shot[1]['match_context'] if matching_shot else 'Matched asset metadata'
+                public['match_sources'] = matching_shot[1]['match_sources'] if matching_shot else []
             matched.append((score, public))
     if sort == 'name':
         matched.sort(key=lambda item: item[1]['metadata']['title'].casefold())
@@ -71,21 +77,33 @@ async def library(q: str = Query(default='', max_length=500), project: str = '',
 @router.get('/search/shots')
 async def search_shots(q: str = Query(default='', max_length=500), project: str = '', review_status: str = '',
                        tag: str = '', rights_status: str = '', collection: str = '',
+                       job_id: str | None = Query(default=None, max_length=200),
                        limit: int = Query(default=200, ge=1, le=500), offset: int = Query(default=0, ge=0)):
     matches = []
     jobs = list_jobs()
-    for job in _filtered(jobs, project=project, rights_status=rights_status, collection=collection):
+    scoped = [require_job(job_id)] if job_id is not None else jobs
+    for job in _filtered(scoped, project=project, rights_status=rights_status, collection=collection):
         for shot in shot_views(job):
             if review_status and shot['review_status'] != review_status:
                 continue
             if tag and tag.casefold() not in {t.casefold() for t in shot['tags']}:
                 continue
-            score = search_score(q, shot)
+            score, match = match_shot(q, shot)
             if score >= 0:
-                matches.append((score, shot))
+                matches.append((score, {**shot, **match}))
     matches.sort(key=lambda item: item[0], reverse=True)
     return {'shots': [s for _, s in matches[offset:offset + limit]], 'total': len(matches), 'search_type': 'keyword',
             'active_jobs': sum(j.status in ('queued', 'analyzing', 'processing') for j in jobs)}
+
+
+@router.get('/projects')
+async def projects():
+    imports = []
+    for job in list_jobs():
+        view = asset_view(job)
+        imports.append({'id': job.job_id, 'title': view['metadata']['title'],
+                        'filename': job.filename, 'status': job.status, 'shot_count': view['shot_count']})
+    return {'projects': imports, 'total': len(imports)}
 
 
 @router.get('/{job_id}')
@@ -157,13 +175,32 @@ async def cancel_analysis(job_id: str):
 
 
 @router.get('/{job_id}/export')
-async def export_asset(job_id: str, format: str = Query(default='json', pattern='^(json|csv|xmp|srt|edl|fcpxml)$')):
-    from app.services.library_export import export_library
+async def export_asset(job_id: str, format: str = Query(default='json', pattern='^(json|csv|xmp|srt|edl|fcpxml)$'),
+                       shot_numbers: str | None = Query(default=None, max_length=20000),
+                       analysis_started_at: str | None = Query(default=None, max_length=100)):
+    from app.services.library_export import export_library, parse_shot_selection
     job = require_job(job_id)
+    if analysis_started_at is not None and analysis_started_at != str(job.analysis_config.get('started_at') or ''):
+        raise HTTPException(409, 'The analysis changed. Refresh the shots before exporting this selection.')
     try:
-        content, media_type, extension = export_library(job, format)
+        selected = parse_shot_selection(shot_numbers)
+        content, media_type, extension = export_library(job, format, selected)
     except ValueError as exc:
         raise HTTPException(422, str(exc))
-    name = quote(f'{Path(job.filename).stem}_metadata.{extension}')
+    suffix = 'metadata' if selected is None else 'selected_shots'
+    name = quote(f'{Path(job.filename).stem}_{suffix}.{extension}')
     return Response(content=content, media_type=media_type,
                     headers={'Content-Disposition': f"attachment; filename*=UTF-8''{name}"})
+
+
+@router.get('/{job_id}/export-options')
+async def available_exports(job_id: str, shot_numbers: str | None = Query(default=None, max_length=20000),
+                            analysis_started_at: str | None = Query(default=None, max_length=100)):
+    from app.services.library_export import export_options, parse_shot_selection
+    job = require_job(job_id)
+    if analysis_started_at is not None and analysis_started_at != str(job.analysis_config.get('started_at') or ''):
+        raise HTTPException(409, 'The analysis changed. Refresh the shots before exporting this selection.')
+    try:
+        return export_options(job, parse_shot_selection(shot_numbers))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))

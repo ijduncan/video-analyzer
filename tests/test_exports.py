@@ -246,6 +246,10 @@ class NleExportTests(unittest.TestCase):
         ]
         for change, expected in cases:
             for exporter in (export_edl, export_fcpxml):
+                # FCPXML now supports exact rational rates and explicit file-zero
+                # timing without embedded TC; CMX3600 still needs its stricter basis.
+                if exporter is export_fcpxml and (expected == "fractional" or expected == "known source timecode"):
+                    continue
                 with self.subTest(change=change, exporter=exporter.__name__), self.assertRaisesRegex(ValueError, expected):
                     job = ExportJob()
                     job.technical.update(change)

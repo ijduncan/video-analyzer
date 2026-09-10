@@ -6,11 +6,11 @@ An agency-first footage library with Gemini video analysis, editable shot metada
 
 - **Persistent library:** SQLite stores assets, analysis results, annotations, project/client/campaign data, collections, rights status, and review decisions across restarts.
 - **Local-first import:** import multiple videos without an AI key; ffprobe reads source duration, resolution, codec, frame rate, audio presence and embedded timecode. ffmpeg produces actual footage posters and shot thumbnails.
-- **Footage discovery:** search filenames, human metadata and AI descriptions across the library or individual shots. Search is currently keyword matching, with project, review, tag and rights filters; it is not a vector/semantic search engine.
+- **Projects and discovery:** each import is a separate project. Shots view always searches one project, with review, tag and rights filters. Inside a video, search shot metadata, colors, camera work, transcripts, section analysis, summaries, custom analysis and human annotations together. Results explain which information matched; section analysis links back to its shots. Search uses keywords, not vector similarity.
 - **Progressive analysis:** known-duration videos are indexed in 30-second processing sections. Shots and thumbnails appear as each section finishes, with successful section counts and source time processed. These section edges are not claimed to be editorial cuts. Gemini proposes shots, subjects, actions, visible text, logos, location, cinematography and timestamped evidence. Human tags/notes remain separate. The full preset adds detailed notes, summary and related shots afterward.
 - **Background processing:** analysis continues when a library tab closes, progress and completed stages persist, duplicate runs are rejected, and interrupted runs are identified on restart. Retry is explicit; a restart does not automatically resume external model calls.
 - **Editorial review:** open a full-window video workspace with a large player, thumbnail shot grid, analysis and metadata. Thumbnails use each shot's midpoint. Seek between shots, edit tags and notes, record rights and review status, and return to the library with your search and filters intact.
-- **Portable exports:** JSON, UTF-8 CSV, XMP with timed markers, transcript SRT, and guarded EDL/FCPXML reference exports. Source media remains unchanged.
+- **Export workspace:** export the whole video or selected shots as JSON, UTF-8 CSV, XMP, transcript SRT, EDL or Final Cut Pro XML. Unavailable formats explain their requirements. Copy individual in/out times, a shot range, or all ranges. Original source coordinates are preserved; media is not rendered or included.
 - **Original analyzer:** the earlier scene timeline, detail, comparison and report views remain available from **Analyzer**.
 
 ## Run locally
@@ -79,13 +79,17 @@ Open [the Docker workspace](http://localhost:5173). Compose binds to loopback an
 
 `DATABASE_PATH` and `UPLOAD_DIR` can override storage locations. Back up both the database and originals; exports do not package video files. YouTube references support analysis but do not provide local technical metadata or a native preview; use a local original for reliable editorial handoffs.
 
+Imports have independent project IDs and results in the same SQLite database, rather than separate database files. The optional **Project label** metadata field can group related imports for an agency; it does not merge their shot browsers.
+
 ## Accuracy and export boundaries
 
 AI scene/shot boundaries are **approximate**. Sampling can miss short edits; decimal timestamps do not imply frame accuracy. Model confidence is an uncalibrated estimate, and visible branding does not establish usage rights. Speech text is model transcription with shot-level timing, not a verified word-aligned transcript. SRT export fails clearly when no actual timed transcript exists; it never turns shot descriptions into subtitles.
 
 Progressive indexing still waits for Google's upload processing before the first section. Shots crossing processing boundaries may be split and are flagged for review. Retry currently reprocesses the run; it does not skip successful sections. See [progressive analysis](docs/PROGRESSIVE_ANALYSIS.md) for behavior and measured latency.
 
-EDL/FCPXML exports require verified source frame rate and embedded source timecode. Fractional/drop-frame sources are deliberately rejected by the current adapter. FCPXML also needs valid source dimensions and references the original filename relative to the exported XML; put the original beside the XML or relink in the editor. Generated structures are tested, but import/round-trip behavior in Premiere, Resolve and Final Cut Pro has not been tested in installed editors.
+EDL requires verified integer source frame rate and embedded non-drop timecode. FCPXML supports integer and exact common fractional frame rates; when embedded timecode is absent, it explicitly uses the media file's zero origin. Import inspection verifies nominal frame cadence against packet presentation timestamps while retaining the independently measured average rate. Unknown or irregular timing stays unverified. FCPXML needs valid source dimensions and references the original filename relative to the exported XML; put the original beside the XML or relink in the editor. Drop-frame, variable-rate and unsupported source timing are rejected with a reason. Generated structures are tested, but round-trip behavior in installed editors remains unverified.
+
+Selected-shot exports preserve original timestamps and annotations. JSON includes relevant section notes as section-wide context, excluding unrelated whole-video summaries and custom reports. Selected SRT retains complete overlapping transcript cues and their original times; it does not invent word alignment. Selections from an older analysis are blocked until refreshed. Rendering a selected portion into a new video file is future work.
 
 Cost figures use recorded provider token usage and dated pricing where available. Thinking tokens are included; audio/context/cache/pricing differences can make an aggregate estimate incomplete. Unknown models are marked unpriced, not assigned a zero-dollar promise.
 

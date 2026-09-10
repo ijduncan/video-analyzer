@@ -8,7 +8,7 @@ The rebuild passes its local automated suite and live Gemini compatibility check
 
 | Check | Result |
 |---|---|
-| Backend/media/export tests | 89 tests passed, with 52 passing parameterized subtests |
+| Backend/media/export tests | 144 tests passed, with 50 passing parameterized subtests |
 | Frontend TypeScript and production build | Passed; Vite production bundle generated |
 | Frontend ESLint | Passed |
 | Diff whitespace check | Passed |
@@ -87,11 +87,31 @@ The isolated browser fixture captured `flash_only` for Shots and tags and `flash
 
 A preliminary browser interception rule did not block a real Timeline 4 test request. It was cancelled before any successful processing section or result replacement. The original three shots and completed-result status were retained; its prior cost estimate had been overwritten by the attempted run and is now shown as unavailable. The remaining request checks used an isolated server that captured requests without provider access. Sanitized incident evidence is in ignored `artifacts/qa/cancelled-mode-test.json`.
 
+## Project search and export workspace
+
+Each imported video is now a logical project in the persistent library. Shots view requires a project, and the full-window video workspace searches that import's shot metadata, overlapping transcript cues, section notes, summary, custom analysis and human metadata. Match labels distinguish shot observations from section- or video-wide context. Sections also provide a direct link to their shots. The optional agency Project label remains independent of the import ID.
+
+The dedicated Export tab fills the workspace and offers whole-video or selected-shot JSON, CSV, XMP, SRT, EDL and Final Cut Pro XML. Format availability uses the same validators as downloads. Empty or invalid selections cannot silently export the whole asset. Changed analysis versions block stale selections; pagination and section filters reset appropriately on a new run. Source-relative in/out times and ranges can be copied individually or together. Selected JSON keeps applicable section context explicitly labeled, while selected subtitles retain complete overlapping cues at their original times.
+
+Browser verification used two isolated eight-second local videos with separate project IDs. The fixture server had a blank provider key and rejected API writes and legacy analysis routes. `tungsten CU` found only the Amber project's second shot; switching to Cobalt produced no matches. A section search found its two related shots, and the section's View shots action cleared the query and opened exactly those shots. Multi-selection and the per-shot Export action were exercised.
+
+Actual browser downloads saved a single-shot JSON and FCPXML file. Parsed JSON contained only shot 2 at 00:02.000–00:04.000; the XML contained exactly one asset-clip, a two-second duration and the correct embedded source-timecode offset. Copy range returned `00:02.000 - 00:04.000`. The silent fixture disabled SRT with an explanation, and an empty selected-shot scope disabled download. Initial automated download attempts were blocked by the headless browser's download setting; allowing downloads in that isolated browser resolved them. The application download code required no workaround.
+
+The export layout was inspected at 1440px and 390px. At 390px, both the document and workspace measured 390px without horizontal overflow. No uncaught browser page errors were reported. Screenshots and downloaded fixture files remain under ignored `artifacts/qa/`.
+
+An isolated progressive replay expanded 150 shots to 180 without moving page two or its selection. Replacing the analysis with five shots reset the browser to page one, cleared a removed section filter and marked the previous export selection stale. Download and copying were disabled for that stale selection. Growing the results again did not jump to an old page. The export table's page clamp and a metadata draft's round trip through Export and polling were also verified. Both fixture records were restored exactly; the QA browser and helper server were stopped.
+
+Final automated validation passed 144 tests and 50 subtests, plus the frontend build and ESLint. Search regressions cover section/import isolation, transcript interval boundaries, custom analysis and private fields. Color terms use word boundaries so red does not match armored or inspired. A live read-only query against the teaser returned ten matches, led by the actual red-canyon shot, instead of matching all 46 shots through incidental substrings.
+
+The existing teaser's average frame-rate fraction was `100755000/4202323`, slightly different from its declared nominal `24000/1001`. Local ffprobe inspection verified cumulative presentation timing for all 2,239 packets within one `1/90000`-second stream tick. The original average remains stored, with separate verified nominal-rate fields. Timeline 4 likewise verified 24 fps across 3,662 frames. Only inspected technical facts were refreshed; fingerprints confirmed that analysis, annotations and all other job fields stayed unchanged. The live teaser's single-shot FCPXML endpoint returned one clip and `1001/24000s` frame duration with explicitly declared file-zero timing. No Gemini calls were used for these changes.
+
+New imports perform a local packet-timing check with a 60-second timeout. Incomplete counts, missing timestamps, drift or irregular timing remain unverified; the NLE adapter blocks them rather than rounding an arbitrary average rate. Fixture tests cover these failure modes and exact rational timing. Installed-editor round trips remain outstanding.
+
 ## Remaining validation
 
 - Recognition/retrieval quality on representative agency and filmmaking footage, including difficult audio, fast montage and multilingual material.
 - True word-aligned transcription and exact cut/frame verification.
-- Fractional/drop-frame and variable-frame-rate NLE adapters.
+- Drop-frame and variable-frame-rate NLE adapters; broader fractional-rate editor compatibility.
 - Round-trip imports in installed Premiere, Resolve and Final Cut Pro.
 - Shared-workspace authentication/authorization, distributed queue recovery and archive-scale load testing.
 - Hosted deployment and remote CI once repository write access is available.

@@ -1,5 +1,5 @@
 import { getApiKey } from './apiKey'
-import type { FlashAnalysis, SceneDeepAnalysis, VideoSummary } from './types'
+import type { FlashAnalysis, SceneDeepAnalysis, VideoSummary, Shot } from './types'
 
 export type ReviewStatus = 'unreviewed' | 'reviewed' | 'needs_changes'
 export type RightsStatus = 'unknown' | 'cleared' | 'restricted'
@@ -74,7 +74,14 @@ export interface AssetDetail extends LibraryAsset {
   cost_estimate?: { estimated_cost_usd: number | null; pricing_status?: string; pricing_as_of?: string; warnings?: string[]; total_input_tokens?: number; total_output_tokens?: number } | null
   transcript: { start_time?: string; end_time?: string; start_seconds?: number; text?: string; speaker?: string }[]
 }
-export interface LibraryShot {
+export interface LibraryProject {
+  id: string
+  title: string
+  filename: string
+  status: string
+  shot_count: number
+}
+export interface LibraryShot extends Shot {
   job_id: string
   filename: string
   scene_number: number
@@ -93,6 +100,14 @@ export interface LibraryShot {
   thumbnail_url: string | null
   preview_url: string | null
   review_status: ReviewStatus
+  section_context?: { scene_number: number; scene_title: string; scene_description: string; start_time: string; end_time: string }
+  section_analysis?: SceneDeepAnalysis | null
+  video_summary?: VideoSummary | null
+  project_metadata?: AssetMetadata
+  custom_analysis?: unknown
+  transcript_segments?: Record<string, unknown>[]
+  match_sources?: string[]
+  match_context?: string
 }
 export interface Capabilities {
   google_configured: boolean
@@ -115,7 +130,10 @@ export function getLibrary(filters: { q?: string; project?: string; review_statu
 export function getAsset(id: string, signal?: AbortSignal) {
   return request<AssetDetail>(`/api/library/${encodeURIComponent(id)}`, { signal })
 }
-export function getShots(filters: { q: string; project?: string; review_status?: string; tag?: string; rights_status?: string; collection?: string; limit?: number; offset?: number }, signal?: AbortSignal) {
+export function getProjects(signal?: AbortSignal) {
+  return request<{ projects: LibraryProject[]; total: number }>('/api/library/projects', { signal })
+}
+export function getShots(filters: { q: string; job_id?: string; project?: string; review_status?: string; tag?: string; rights_status?: string; collection?: string; limit?: number; offset?: number }, signal?: AbortSignal) {
   const params = new URLSearchParams()
   Object.entries(filters).forEach(([key, value]) => { if (value) params.set(key, String(value)) })
   return request<{ shots: LibraryShot[]; total: number }>(`/api/library/search/shots?${params}`, { signal })
@@ -149,6 +167,23 @@ export function deleteAsset(id: string) {
     method: 'DELETE', headers,
   })
 }
-export function exportUrl(id: string, format: 'json' | 'csv' | 'xmp' | 'srt' | 'edl' | 'fcpxml') {
-  return `/api/library/${encodeURIComponent(id)}/export?format=${format}`
+export type ExportFormat = 'json' | 'csv' | 'xmp' | 'srt' | 'edl' | 'fcpxml'
+export interface ExportOptions {
+  scope: 'selected_shots' | 'asset'
+  shot_numbers: number[]
+  formats: { format: ExportFormat; label: string; available: boolean; reason: string | null }[]
+}
+function exportParams(shotNumbers?: number[], analysisStartedAt?: string) {
+  const params = new URLSearchParams()
+  if (shotNumbers) params.set('shot_numbers', shotNumbers.join(','))
+  if (analysisStartedAt !== undefined) params.set('analysis_started_at', analysisStartedAt)
+  return params
+}
+export function getExportOptions(id: string, shotNumbers?: number[], analysisStartedAt?: string, signal?: AbortSignal) {
+  return request<ExportOptions>(`/api/library/${encodeURIComponent(id)}/export-options?${exportParams(shotNumbers, analysisStartedAt)}`, { signal })
+}
+export function exportUrl(id: string, format: ExportFormat, shotNumbers?: number[], analysisStartedAt?: string) {
+  const params = exportParams(shotNumbers, analysisStartedAt)
+  params.set('format', format)
+  return `/api/library/${encodeURIComponent(id)}/export?${params}`
 }

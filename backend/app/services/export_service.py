@@ -75,6 +75,10 @@ def _source_timing(data: dict) -> tuple[int, int, Decimal]:
     technical = data.get("technical") or {}
     if technical.get("variable_frame_rate") or technical.get("is_vfr"):
         raise ValueError("NLE export does not support variable frame rate media; use JSON, CSV or XMP")
+    if (any(key in technical for key in ("nominal_frame_rate_verified", "nominal_frame_rate_fraction"))
+            and not (technical.get("nominal_frame_rate_verified") is True
+                     and technical.get("frame_rate_verification") == "ffprobe_full_packet_pts")):
+        raise ValueError("NLE export requires verified constant frame timing; source cadence is unknown or irregular")
     if technical.get("drop_frame") or str(technical.get("timecode_mode", "")).upper() in {"DF", "DROP", "DROP-FRAME"}:
         raise ValueError("NLE export does not support drop-frame timecode; use JSON, CSV or XMP")
     raw_rate = technical.get("frame_rate_fraction") or technical.get("frame_rate")
@@ -105,8 +109,61 @@ def _source_timing(data: dict) -> tuple[int, int, Decimal]:
     return fps, source_start, duration
 
 
-def _frames(seconds: Decimal, fps: int) -> int:
-    return int((seconds * fps).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+def _frames(seconds: Decimal, fps: int | Fraction) -> int:
+    scaled = Fraction(seconds) * fps
+    return (2 * scaled.numerator + scaled.denominator) // (2 * scaled.denominator)
+
+
+def _fcpxml_timing(data: dict) -> tuple[Fraction, int, Decimal, str]:
+    """FCPXML uses rational source-frame durations, independently of CMX timecode.
+
+    Apple documents 1001/30000s frames and the meanings of start/offset:
+    https://developer.apple.com/documentation/professional-video-applications/timing-attributes
+    File-relative zero is a declared local timeline, not inferred embedded TC:
+    https://developer.apple.com/documentation/professional-video-applications/creating-fcpxml-documents
+    """
+    technical = data.get("technical") or {}
+    if technical.get("variable_frame_rate") or technical.get("is_vfr"):
+        raise ValueError("FCPXML export does not support variable frame rate media; use JSON, CSV or XMP")
+    timecode = str(technical.get("source_timecode") or "")
+    if (technical.get("drop_frame") or ";" in timecode or
+        str(technical.get("timecode_mode", "")).upper() in {"DF", "DROP", "DROP-FRAME"}):
+        raise ValueError("FCPXML export does not yet support drop-frame source timecode; use JSON, CSV or XMP")
+    verified_nominal = (technical.get("nominal_frame_rate_fraction")
+                        if technical.get("nominal_frame_rate_verified") is True
+                        and technical.get("frame_rate_verification") == "ffprobe_full_packet_pts" else None)
+    if (any(key in technical for key in ("nominal_frame_rate_verified", "nominal_frame_rate_fraction"))
+            and not verified_nominal):
+        raise ValueError("FCPXML requires verified constant frame timing; source cadence is unknown or irregular")
+    raw_rate = verified_nominal or technical.get("frame_rate_fraction") or technical.get("frame_rate")
+    try:
+        rate = Fraction(str(raw_rate))
+    except (ValueError, ZeroDivisionError) as exc:
+        raise ValueError("FCPXML export requires a known source frame rate") from exc
+    if rate <= 0:
+        raise ValueError("FCPXML export requires a known positive source frame rate")
+    if rate.denominator != 1 and not (verified_nominal or technical.get("frame_rate_fraction")):
+        raise ValueError("Fractional FCPXML timing requires an exact source frame-rate fraction")
+    supported = {Fraction(value) for value in (24, 25, 30, 48, 50, 60)} | {
+        Fraction(value, 1001) for value in (24000, 30000, 48000, 60000)}
+    if rate not in supported:
+        raise ValueError("Unsupported source frame rate for FCPXML export")
+    nominal_fps = (rate.numerator + rate.denominator - 1) // rate.denominator
+    source_start = 0
+    if timecode:
+        match = re.fullmatch(r"(\d{2}):(\d{2}):(\d{2}):(\d{2})", timecode)
+        if not match:
+            raise ValueError("Embedded source timecode must use HH:MM:SS:FF format")
+        hours, minutes, seconds, frames = map(int, match.groups())
+        if hours >= 24 or minutes >= 60 or seconds >= 60 or frames >= nominal_fps:
+            raise ValueError("Source timecode is invalid for the source frame rate")
+        source_start = ((hours * 60 + minutes) * 60 + seconds) * nominal_fps + frames
+    duration = parse_seconds(technical.get("duration_seconds"))
+    if duration <= 0:
+        raise ValueError("FCPXML export requires a known positive source duration")
+    if timecode:
+        _frame_timecode(source_start + _frames(duration, rate), nominal_fps)
+    return rate, source_start, duration, "embedded_source_timecode" if timecode else "source_relative_file_zero"
 
 
 def _frame_timecode(frame: int, fps: int) -> str:
@@ -174,7 +231,7 @@ def export_fcpxml(job) -> str:
     https://developer.apple.com/documentation/professional-video-applications/media-rep
     """
     data = job_data(job)
-    fps, source_start, duration = _source_timing(data)
+    fps, source_start, duration, timing_basis = _fcpxml_timing(data)
     technical = data.get("technical") or {}
     width, height = technical.get("width"), technical.get("height")
     if not isinstance(width, int) or not isinstance(height, int) or width <= 0 or height <= 0:
@@ -182,17 +239,23 @@ def export_fcpxml(job) -> str:
     if technical.get("rotation", 0) not in (0, None):
         raise ValueError("FCPXML export of rotated media requires a verified orientation mapping; use JSON or XMP")
     shots = _nle_shots(data, fps, duration)
-    _frame_timecode(source_start + _frames(duration, fps), fps)
     filename = source_filename(data.get("filename"))
-    time = lambda frames: f"{frames}/{fps}s"
+    time = lambda frames: f"{frames * fps.denominator}/{fps.numerator}s"
     root = ET.Element("fcpxml", version="1.11")
     root.append(ET.Comment("Media reference export. Place the original file beside this XML or relink. Analysis boundaries are estimates rounded to source frames."))
+    if timing_basis == "source_relative_file_zero":
+        root.append(ET.Comment("Source-relative file-zero timing: no embedded source timecode was available. Zero is the media file origin, not an asserted original timecode."))
     resources = ET.SubElement(root, "resources")
-    ET.SubElement(resources, "format", id="r1", frameDuration=f"1/{fps}s", width=str(width), height=str(height))
+    ET.SubElement(resources, "format", id="r1", frameDuration=f"{fps.denominator}/{fps.numerator}s", width=str(width), height=str(height))
     asset = ET.SubElement(resources, "asset", id="r2", name=filename, start=time(source_start),
                           duration=time(_frames(duration, fps)), hasVideo="1", format="r1",
                           hasAudio="1" if technical.get("has_audio") else "0")
     ET.SubElement(asset, "media-rep", kind="original-media", src=quote("./" + filename, safe="/"))
+    asset_metadata = ET.SubElement(asset, "metadata")
+    ET.SubElement(asset_metadata, "md", key="org.videoanalyzer.sourceTimingBasis", value=timing_basis)
+    if technical.get("nominal_frame_rate_verified") is True:
+        ET.SubElement(asset_metadata, "md", key="org.videoanalyzer.frameRateVerification",
+                      value=technical.get("frame_rate_verification", ""))
     library = ET.SubElement(root, "library")
     event = ET.SubElement(library, "event", name=f"{filename} Analysis")
     project = ET.SubElement(event, "project", name=f"{filename} Shot List")

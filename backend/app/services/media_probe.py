@@ -15,6 +15,66 @@ async def _stop_process(proc):
     await proc.wait()
 
 
+def _packet_cadence(video: dict, packets: list[dict]) -> dict:
+    """Confirm the declared nominal rate against every presentation timestamp.
+
+    r_frame_rate alone is a guessed base rate, not proof of constant cadence:
+    https://ffmpeg.org/doxygen/trunk/structAVStream.html
+    Keep the independently reported average rate unchanged.
+    """
+    result = {
+        "nominal_frame_rate_fraction": video.get("r_frame_rate"),
+        "nominal_frame_rate_verified": False,
+        "frame_rate_verification": "unverified",
+        "video_time_base": video.get("time_base"),
+    }
+    try:
+        rate = Fraction(video.get("r_frame_rate", "0/1"))
+        time_base = Fraction(video.get("time_base", "0/1"))
+        expected_count = int(video.get("nb_frames", 0))
+        if rate <= 0 or time_base <= 0 or expected_count < 2 or len(packets) != expected_count:
+            return result
+        pts = sorted(int(packet["pts"]) for packet in packets)
+        period_ticks = 1 / (rate * time_base)
+        # Very coarse stream clocks cannot distinguish cadence reliably.
+        if period_ticks < 10 or any(b <= a for a, b in zip(pts, pts[1:])):
+            return result
+        # Check total phase, not just consecutive steps: small per-frame drift
+        # must not accumulate into a different editing timebase on long media.
+        if any(abs((value - pts[0]) - index * period_ticks) > 1
+               for index, value in enumerate(pts)):
+            return result
+        result.update(nominal_frame_rate_verified=True,
+                      frame_rate_verification="ffprobe_full_packet_pts",
+                      frame_rate_verified_frames=len(pts))
+    except (TypeError, ValueError, ZeroDivisionError, KeyError):
+        pass
+    return result
+
+
+async def _probe_packet_cadence(path: str, video: dict) -> dict:
+    unverified = _packet_cadence(video, [])
+    proc = await asyncio.create_subprocess_exec(
+        "ffprobe", "-v", "error", "-select_streams", "v:0", "-show_packets",
+        "-show_entries", "packet=pts", "-of", "json", path,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+    except asyncio.TimeoutError:
+        await _stop_process(proc)
+        return unverified
+    except asyncio.CancelledError:
+        await _stop_process(proc)
+        raise
+    if proc.returncode:
+        return unverified
+    try:
+        return _packet_cadence(video, json.loads(stdout).get("packets", []))
+    except (ValueError, TypeError):
+        return unverified
+
+
 async def probe_media(path: str) -> dict:
     proc = await asyncio.create_subprocess_exec(
         "ffprobe", "-v", "error", "-show_format", "-show_streams", "-of", "json", path,
@@ -41,6 +101,7 @@ async def probe_media(path: str) -> dict:
         fps = float(Fraction(rate))
     except (ValueError, ZeroDivisionError):
         fps = 0
+    timing = await _probe_packet_cadence(path, video)
     return {
         "duration_seconds": float(fmt.get("duration", video.get("duration", 0))),
         "width": video.get("width", 0), "height": video.get("height", 0),
@@ -50,6 +111,7 @@ async def probe_media(path: str) -> dict:
         "has_audio": any(s.get("codec_type") == "audio" for s in streams),
         "pixel_format": video.get("pix_fmt"), "color_space": video.get("color_space"),
         "rotation": next((s.get("rotation") for s in video.get("side_data_list", []) if "rotation" in s), 0),
+        **timing,
     }
 
 

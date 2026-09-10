@@ -19,6 +19,10 @@ from typing import Any, Mapping
 
 
 SCHEMA_VERSION = "1.0"
+EXPORT_FORMATS = (
+    ("json", "JSON metadata"), ("csv", "CSV shot list"), ("xmp", "XMP sidecar"),
+    ("srt", "SRT subtitles"), ("edl", "EDL edit list"), ("fcpxml", "Final Cut Pro XML"),
+)
 NS = {
     "x": "adobe:ns:meta/",
     "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
@@ -68,6 +72,7 @@ def portable_document(job: Any) -> dict:
     return _public({
         "schema": "video-analyzer.library",
         "schema_version": SCHEMA_VERSION,
+        "export_scope": data.get("export_scope") or {"type": "asset"},
         "asset": {
             "id": data.get("job_id"),
             "filename": source_filename(data.get("filename")),
@@ -82,6 +87,7 @@ def portable_document(job: Any) -> dict:
             "deep_results": data.get("deep_results") or [],
             "summary": data.get("summary"),
             "custom_result": data.get("custom_result"),
+            "shot_matches": data.get("shot_matches") or [],
         },
         "shot_annotations": data.get("shot_annotations") or {},
         "transcript": data.get("transcript") or [],
@@ -97,6 +103,7 @@ def portable_document(job: Any) -> dict:
             "analysis_origin": "AI-generated analysis; reviewed annotations are stored separately",
             "timing_note": "Analysis timestamps are estimates unless separately verified.",
             "technical_origin": "Stored source inspection metadata; missing values remain unknown",
+            "export_scope": data.get("export_scope") or {"type": "asset"},
         },
     })
 
@@ -140,6 +147,95 @@ def iter_shots(data: dict):
             yield scene, shot, (data.get("shot_annotations") or {}).get(str(shot.get("shot_number")), {})
 
 
+def parse_shot_selection(value: str | None) -> list[int] | None:
+    """An omitted selection means the asset; an explicit empty one is invalid."""
+    if value is None:
+        return None
+    pieces = value.split(",")
+    if not pieces or any(not re.fullmatch(r"[1-9][0-9]{0,9}", part.strip()) for part in pieces):
+        raise ValueError("shot_numbers must be a comma-separated list of positive shot numbers")
+    return sorted({int(part.strip()) for part in pieces})
+
+
+def _selected_data(data: dict, shot_numbers: list[int] | None) -> dict:
+    """Build an independent selection view without rebasing source coordinates."""
+    if shot_numbers is None:
+        return data
+    if not shot_numbers or any(type(number) is not int or number <= 0 for number in shot_numbers):
+        raise ValueError("Select at least one positive shot number")
+    selected = set(shot_numbers)
+    available = {shot.get("shot_number") for _, shot, _ in iter_shots(data)}
+    missing = selected - available
+    if missing:
+        raise ValueError("Unknown shot numbers: " + ", ".join(str(number) for number in sorted(missing)))
+    duration = (data.get("technical") or {}).get("duration_seconds")
+    kept_scenes, intervals, seen, warnings = [], [], set(), []
+    for scene in (data.get("flash_result") or {}).get("scenes", []):
+        shots = []
+        for shot in scene.get("shots", []):
+            number = shot.get("shot_number")
+            if number not in selected:
+                continue
+            if number in seen:
+                raise ValueError("Selected shot numbers are ambiguous in the stored analysis")
+            seen.add(number)
+            intervals.append(segment_times(shot, duration))
+            shots.append(dict(shot))
+            warnings.extend(shot.get("analysis_warnings") or [])
+        if shots:
+            kept_scenes.append({**scene, "shots": shots})
+
+    def overlaps(segment):
+        start, end = segment_times(segment, duration)
+        return any(start < selected_end and end > selected_start for selected_start, selected_end in intervals)
+
+    transcript = []
+    for cue in data.get("transcript") or []:
+        try:
+            if not isinstance(cue, Mapping):
+                raise ValueError("Invalid transcript cue")
+            if overlaps(cue):
+                transcript.append(dict(cue))
+        except ValueError:
+            warnings.append("A transcript cue with invalid timing was omitted because its selection overlap is unknown.")
+
+    scene_numbers = {scene.get("scene_number") for scene in kept_scenes}
+    deep_results = []
+    for deep in data.get("deep_results") or []:
+        if deep.get("scene_number") not in scene_numbers:
+            continue
+        evidence = []
+        for observation in deep.get("evidence") or []:
+            try:
+                if isinstance(observation, Mapping) and overlaps(observation):
+                    evidence.append(dict(observation))
+            except ValueError:
+                continue
+        deep_results.append({**deep, "evidence": evidence,
+            "context_scope": "Section-wide notes; may describe unselected shots within this included section."})
+
+    flash = {**(data.get("flash_result") or {}), "scenes": kept_scenes,
+             "total_shots": len(seen), "total_scenes": len(kept_scenes),
+             "analysis_warnings": list(dict.fromkeys(warnings))}
+    return {**data, "flash_result": flash,
+        "shot_annotations": {key: value for key, value in (data.get("shot_annotations") or {}).items()
+                             if str(key) in {str(number) for number in selected}},
+        "deep_results": deep_results, "transcript": transcript,
+        "summary": None, "custom_result": None, "analysis_history": [],
+        "shot_matches": [dict(match) for match in data.get("shot_matches") or []
+                         if match.get("shot_a") in selected and match.get("shot_b") in selected],
+        "warnings": list(dict.fromkeys(warnings)), "cost_estimate": None,
+        "export_scope": {
+            "type": "selected_shots", "shot_numbers": sorted(selected),
+            "source_timestamps": "Original asset-relative timestamps; no media is rendered or rebased.",
+            "asset_context": "Source technical facts and human asset metadata are retained.",
+            "deep_analysis": "Only included sections; their untimed notes remain section-wide context.",
+            "transcript": "Complete overlapping cues retain original timestamps and text; words are not trimmed.",
+            "analysis_progress": "Progress describes the original analysis run, not selection coverage.",
+        },
+    }
+
+
 def _cell(value: Any) -> str:
     if value is None:
         return ""
@@ -165,7 +261,8 @@ def _csv_document(data: dict) -> str:
                "Scene", "Scene Title", "Shot", "Start", "End", "Start Seconds", "End Seconds",
                "Shot Type", "Camera Movement", "Visual Description", "Audio Notes",
                "Subjects", "Dominant Colors", "Mood", "Reviewed Tags", "Shot Notes",
-               "Shot Review Status", "Source Frame Rate", "Source Timecode", "Timing Status"]
+               "Shot Review Status", "Source Frame Rate", "Source Timecode", "Timing Status",
+               "AI Tags", "Actions", "Visible Text", "Potential Logos", "Location", "Transcript", "Evidence"]
     writer.writerow(headers)
     meta, technical = data.get("metadata") or {}, data.get("technical") or {}
     common = [data.get("job_id"), source_filename(data.get("filename")), meta.get("title"),
@@ -177,7 +274,7 @@ def _csv_document(data: dict) -> str:
     if not shots:
         # An asset can have valuable human metadata before AI analysis exists.
         row = common + [""] * 17 + [technical.get("frame_rate_fraction") or technical.get("frame_rate"),
-                                     technical.get("source_timecode"), "No shot analysis available"]
+                                     technical.get("source_timecode"), "No shot analysis available"] + [""] * 7
         writer.writerow([_cell(value) for value in row])
     for scene, shot, reviewed in shots:
         try:
@@ -193,7 +290,10 @@ def _csv_document(data: dict) -> str:
                         shot.get("mood"), reviewed.get("tags"), reviewed.get("notes"),
                         reviewed.get("review_status", "unreviewed"),
                         technical.get("frame_rate_fraction") or technical.get("frame_rate"),
-                        technical.get("source_timecode"), timing_status]
+                        technical.get("source_timecode"), timing_status,
+                        shot.get("tags"), shot.get("actions"), shot.get("visible_text"), shot.get("logos"),
+                        shot.get("location"), shot.get("transcript"),
+                        json.dumps(_public(shot.get("evidence") or []), ensure_ascii=False)]
         writer.writerow([_cell(value) for value in row])
     return out.getvalue()
 
@@ -300,13 +400,12 @@ def _xmp_document(data: dict) -> str:
         if reviewed.get("tags"):
             comment.append("Reviewed tags: " + ", ".join(reviewed["tags"]))
         _element(marker, "xmpDM", "comment", "\n".join(comment))
+        _element(marker, "va", "shotMetadata", json.dumps(_public(shot), ensure_ascii=False))
     ET.indent(root)
     return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="unicode")
 
 
-def export_library(job: Any, format: str) -> tuple[bytes | str, str, str]:
-    """Return content, MIME type, and extension; unsupported data raises ValueError."""
-    data = job_data(job)
+def _render_export(data: dict, format: str) -> tuple[bytes | str, str, str]:
     name = format.casefold()
     if name == "json":
         return json.dumps(portable_document(data), ensure_ascii=False, indent=2, allow_nan=False), "application/json", "json"
@@ -319,5 +418,26 @@ def export_library(job: Any, format: str) -> tuple[bytes | str, str, str]:
     if name in ("edl", "fcpxml"):
         from app.services.export_service import export_edl, export_fcpxml
         exporter, media_type = (export_edl, "text/plain") if name == "edl" else (export_fcpxml, "application/xml")
-        return exporter(job), media_type, name
+        return exporter(data), media_type, name
     raise ValueError(f"Unsupported export format: {format}")
+
+
+def export_library(job: Any, format: str, shot_numbers: list[int] | None = None) -> tuple[bytes | str, str, str]:
+    """Return content, MIME type, extension for the asset or selected source shots."""
+    return _render_export(_selected_data(job_data(job), shot_numbers), format)
+
+
+def export_options(job: Any, shot_numbers: list[int] | None = None) -> dict:
+    """Use the download renderers themselves so format availability cannot drift."""
+    data = _selected_data(job_data(job), shot_numbers)
+    formats = []
+    for name, label in EXPORT_FORMATS:
+        try:
+            _render_export(data, name)
+        except ValueError as error:
+            formats.append({"format": name, "label": label, "available": False, "reason": str(error)})
+        else:
+            formats.append({"format": name, "label": label, "available": True, "reason": None})
+    return {"scope": "asset" if shot_numbers is None else "selected_shots",
+            "shot_numbers": sorted({shot.get("shot_number") for _, shot, _ in iter_shots(data)}),
+            "formats": formats}

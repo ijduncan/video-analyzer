@@ -29,7 +29,7 @@ These are proposed acceptance criteria, not measured product results. Test Gemin
 
 Add deterministic cut candidates with a tested scene detector, followed by local frame verification around transitions. Use a speech-recognition/alignment stage for word-level transcripts rather than relying on broad shot-level LLM text. Keep source-relative seconds, original timecode, rational frame rate, frame indices and confidence semantics explicit.
 
-Implement fractional and drop-frame NLE adapters with fixtures at 23.976 and 29.97/59.94, then round-trip exports through installed versions of Premiere, Resolve and Final Cut Pro. Verify that media relinks, in/out ranges, source timecode, shot names, keywords and markers survive. Add select ranges, handles and media/proxy packaging only after source timing is reliable.
+The export workspace now supports whole-project and selected-shot sidecars, plus exact fractional FCPXML timing. Add drop-frame and broader NLE adapters, then round-trip exports through installed versions of Premiere, Resolve and Final Cut Pro. Verify that media relinks, in/out ranges, source timecode, shot names, keywords and markers survive. Add actual clip rendering with optional handles and media/proxy packaging after source timing is reliable; metadata exports currently reference the original media.
 
 Human corrections must never migrate silently to a different shot after re-analysis. Keep prior analysis versions and annotation snapshots; only reuse annotations when their source ranges match. A future schema should give each annotation a stable evidence identifier and distinguish edits to labels, source ranges and editorial decisions.
 
