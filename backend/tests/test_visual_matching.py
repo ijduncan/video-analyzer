@@ -81,13 +81,13 @@ def test_index_search_resume_and_stale_guards(client, visual_asset):
     state = wait_index(client, ident)
     assert state['status'] == 'complete'
     assert state['indexed'] == 10
-    payload = {'shot_number': 1, 'seconds': 1.5, 'revision': state['revision'], 'target_ids': [ident], 'composition': 0}
+    payload = {'shot_number': 1, 'seconds': 1.5, 'revision': state['revision'], 'target_ids': [ident], 'composition': 0, 'shape': 0}
     response = client.post(f'/api/visual/{ident}/search', json=payload)
     assert response.status_code == 200, response.text
     matches = response.json()['matches']
     assert len(matches) == 1
     assert matches[0]['shot_number'] == 2
-    assert matches[0]['source_box']
+    assert matches[0]['source_box'] is None
     assert client.get(matches[0]['frame_url']).headers['content-type'] == 'image/jpeg'
     client.post(f'/api/visual/{ident}/index')
     assert wait_index(client, ident)['indexed'] == 10
@@ -100,10 +100,10 @@ def test_index_search_resume_and_stale_guards(client, visual_asset):
 def test_validation_and_cancel(client, visual_asset):
     ident = visual_asset.job_id
     revision = client.get(f'/api/visual/{ident}/index').json()['revision']
-    base = {'shot_number': 1, 'seconds': 1, 'revision': revision, 'target_ids': [ident], 'composition': 0}
+    base = {'shot_number': 1, 'seconds': 1, 'revision': revision, 'target_ids': [ident], 'composition': 0, 'shape': 0}
     for changes in [{'target_ids': []}, {'shape': 0, 'composition': 0, 'color': 0}, {'region': [0, 0, 3, 1]}]:
         assert client.post(f'/api/visual/{ident}/search', json={**base, **changes}).status_code == 422
-    for changes in [{'seconds': 100}, {'shot_number': 100}, {'region': [0, 0, .1, .1]}]:
+    for changes in [{'seconds': 100}, {'shot_number': 100}]:
         assert client.post(f'/api/visual/{ident}/search', json={**base, **changes}).status_code == 409
     assert client.post(f'/api/visual/{ident}/search', json={**base, 'target_ids': ['missing']}).status_code == 404
     client.post(f'/api/visual/{ident}/index')

@@ -23,9 +23,9 @@ Text search uses keywords over saved metadata and highlights matching words in s
 
 ## Explore visual match cuts
 
-Open **Match cuts** to connect shots through shape, composition, and color. Choose an outgoing frame, optionally select a region, and search the current project or selected projects. A persistent local index returns candidate frames with separate visual scores and explanations. Composition uses Gemini to identify the main subject, screen position, facing direction, framing, and open space; overlays outline that subject. Adjust both cut points, preview **A → B**, and export the pair's trim ranges as JSON.
+Open **Match cuts** to connect shots through shape, composition, and color. **Identify shapes**, then click a silhouette, draw around a form, or select a named object from the Shape list. The same source silhouette is compared across candidates, even when they depict different objects. Optionally require matching position and size. Composition identifies the main subject, facing direction, framing, and open space. Adjust both cut points, preview **A → B**, and export the pair's trim ranges and discovered outlines as JSON.
 
-Local frame indexing publishes saved frames progressively and supports pause/resume. Shape and color matching remain local. When Composition is enabled, Find match cut starts billable Gemini frame analysis and caches the results; candidates update as analysis arrives. Incompatible subject layouts are filtered out. The visual index samples five frames per shot. Motion scoring, learned visual embeddings, and frame-accurate NLE export of adjusted match pairs are future work. See [the workflow, implementation, and limits](docs/VISUAL_MATCH_CUTS.md).
+Local frame indexing publishes saved frames progressively and supports pause/resume. Shape and Composition use billable Gemini frame analysis with cached results; color matching stays local. Candidates update as analysis arrives. Weak silhouettes and incompatible framing are filtered out. Outlines are approximate, so inspect the actual frames. The visual index samples five frames per shot. Motion scoring, learned visual embeddings, and frame-accurate NLE export of adjusted match pairs are future work. See [the workflow, implementation, and limits](docs/VISUAL_MATCH_CUTS.md).
 
 ## Export useful information
 

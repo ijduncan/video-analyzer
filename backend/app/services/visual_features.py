@@ -44,8 +44,8 @@ def compare(source, target, weights, region=None):
     layout = math.exp(-6 * float(np.mean(np.abs(np.array(source['layout']) - target['layout']))))
     edges = math.exp(-8 * float(np.mean(np.abs(np.array(source['edges']) - target['edges']))))
     composition = .55 * layout + .45 * edges
-    source_shapes = source['shapes'][:5]
-    if region:
+    source_shapes = source['shapes'][:5] if weights['shape'] else []
+    if region and weights['shape']:
         x, y, w, h = region
         source_shapes = [s for s in source['shapes'] if x <= s['box'][0] + s['box'][2] / 2 <= x + w
                          and y <= s['box'][1] + s['box'][3] / 2 <= y + h]

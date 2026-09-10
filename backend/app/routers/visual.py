@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, model_validator
 from app.routers.library import require_job
 from app.services import visual_index
 from app.services import composition_index
+from app.services import shape_index, shape_geometry
 from app.dependencies import get_api_key
 from app.config import settings
 
@@ -25,6 +26,9 @@ class MatchRequest(BaseModel):
     region: tuple[float, float, float, float] | None = None
     limit: int = Field(default=12, ge=1, le=48)
     prepare_composition: bool = True
+    prepare_shape: bool = True
+    source_shape_id: int | None = Field(default=None, ge=0, le=5)
+    align_shape: bool = False
 
     @model_validator(mode='after')
     def valid(self):
@@ -72,6 +76,31 @@ async def get_frame(job_id: str, shot_number: int = Query(ge=1), seconds: float 
         raise HTTPException(409, str(exc))
 
 
+class ShapeRequest(BaseModel):
+    shot_number: int = Field(ge=1)
+    seconds: float = Field(ge=0, allow_inf_nan=False)
+    revision: str = Field(min_length=1, max_length=100)
+
+
+@router.post('/{job_id}/shapes')
+async def identify_shapes(job_id: str, body: ShapeRequest, api_key: str | None = Depends(get_api_key)):
+    job = require_job(job_id)
+    try:
+        key, _ = visual_index.validate_frame(job, body.shot_number, body.seconds, body.revision)
+        saved = shape_index.cached(job, key).get(round(body.seconds * 1000))
+        if (saved is None or saved.get('needs_retry')) and not (api_key or settings.google_api_key):
+            raise HTTPException(400, 'Shape identification uses Gemini. Add a key in Settings first.')
+        profile = await shape_index.ensure(job, key, body.seconds, api_key)
+        visual_index.validate_frame(require_job(job_id), body.shot_number, body.seconds, key)
+        return profile
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(502, 'Shape identification could not finish. Check your Gemini key/quota and try again.')
+
+
 @router.post('/{job_id}/search')
 async def find_matches(job_id: str, body: MatchRequest, api_key: str | None = Depends(get_api_key)):
     job = require_job(job_id)
@@ -83,10 +112,22 @@ async def find_matches(job_id: str, body: MatchRequest, api_key: str | None = De
         source = await asyncio.to_thread(visual_index.features, await visual_index.frame(job, key, body.seconds))
         if not source['usable']:
             raise ValueError('This frame is nearly blank. Choose a frame with visible detail.')
-        if body.region and body.shape:
-            x, y, w, h = body.region
-            if not any(x <= s['box'][0] + s['box'][2] / 2 <= x + w and y <= s['box'][1] + s['box'][3] / 2 <= y + h for s in source['shapes']):
-                raise ValueError('No clear contour was detected in this region. Try a wider region or the whole frame.')
+        source_form = None
+        forms = []
+        if body.shape:
+            shapes = shape_index.cached(job, key).get(round(body.seconds * 1000))
+            if body.prepare_shape:
+                needs_key = shapes is None or shapes.get('needs_retry')
+                for target in targets:
+                    state = shape_index.status(target, visual_index.source_info(target)[0])
+                    needs_key = needs_key or state['indexed'] < state['total']
+                if not (api_key or settings.google_api_key) and needs_key:
+                    raise HTTPException(400, 'Shape identification uses Gemini. Add a key in Settings first.')
+                shapes = await shape_index.ensure(job, key, body.seconds, api_key)
+            forms = shapes['forms'] if shapes else []
+            source_form = shape_geometry.select(forms, body.region, body.source_shape_id)
+            if body.prepare_shape and source_form is None:
+                raise ValueError('No clear silhouette was identified. Choose another frame or use Color or Composition.')
         profile = None
         if body.composition:
             if body.prepare_composition:
@@ -101,8 +142,12 @@ async def find_matches(job_id: str, body: MatchRequest, api_key: str | None = De
             if body.prepare_composition:
                 for target in targets:
                     composition_index.start(target, api_key)
+        if body.shape and body.prepare_shape:
+            for target in targets:
+                shape_index.start(target, api_key)
         result = await asyncio.to_thread(visual_index.search, source, job_id, body.shot_number, targets,
-            {'shape': body.shape, 'composition': body.composition, 'color': body.color}, body.region, body.limit, profile)
+            {'shape': body.shape, 'composition': body.composition, 'color': body.color}, body.region, body.limit, profile, source_form, body.align_shape)
+        result['source_shapes'] = forms
         visual_index.validate_frame(require_job(job_id), body.shot_number, body.seconds, key)
         return result
     except ValueError as exc:
@@ -110,4 +155,4 @@ async def find_matches(job_id: str, body: MatchRequest, api_key: str | None = De
     except Exception as exc:
         if isinstance(exc, HTTPException):
             raise
-        raise HTTPException(502, 'Gemini composition analysis could not finish. Check your key/quota and try again; saved frames are retained.')
+        raise HTTPException(502, 'Gemini visual analysis could not finish. Check your key/quota and try again; saved frames are retained.')

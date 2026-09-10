@@ -53,3 +53,10 @@
 .mc-composition-summary small { display: block; margin-top: 4px; }
 .mc-reasons { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 14px; }
 .mc-reasons span { font-size: 10px; padding: 3px 6px; background: #34432a; color: #d4e5b8; border-radius: 3px; }
+.mc-outline { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.mc-outline polygon { fill: #daf29c18; stroke: #dbf29c; stroke-width: 2; }
+.mc-outline.is-faint polygon { fill: none; stroke: #ffffff55; stroke-width: 1; stroke-dasharray: 4 4; }
+.mc-shape-controls { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-top: 14px; }
+.mc-shape-controls .lw-field { flex: 1; min-width: 180px; margin: 0; }
+.mc-shape-controls small, .mc-shape-controls p { flex-basis: 100%; margin: 0; }
+.mc-align { display: flex; gap: 8px; align-items: center; font-size: 12px; }

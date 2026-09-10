@@ -4,7 +4,9 @@ export interface VisualIndex {
   job_id: string; revision: string; total: number; indexed: number; failed: number
   status: 'not_started' | 'indexing' | 'partial' | 'complete'; error?: string
   composition?: { version: string; indexed: number; total: number; running: boolean; error?: string; model: string; requests: number; input_tokens: number; output_tokens: number }
+  shape?: VisualIndex['composition']
 }
+export interface VisualShape { label: string; outline: number[][]; box: number[] }
 export interface VisualMatch {
   job_id: string; shot_number: number; seconds: number; revision: string
   title: string; filename: string; description: string; frame_url: string; media_url: string
@@ -13,8 +15,10 @@ export interface VisualMatch {
   scores: Record<'shape' | 'composition' | 'color', number>
   source_box: number[] | null; target_box: number[] | null
   reasons?: string[]; composition_summary?: string; box_basis?: string
+  source_outline?: number[][]; target_outline?: number[][]; shape_label?: string; shape_summary?: string
+  shape_geometry?: { silhouette: number; position: number; scale: number }
 }
-export interface VisualResults { matches: VisualMatch[]; indexes: VisualIndex[]; score_basis?: string; source_composition?: { subject_box: number[] | null; summary: string } | null }
+export interface VisualResults { matches: VisualMatch[]; indexes: VisualIndex[]; score_basis?: string; source_composition?: { subject_box: number[] | null; summary: string } | null; source_shape?: VisualShape | null; source_shapes?: VisualShape[] }
 export async function visualRequest<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(`/api/visual/${path}`, body === undefined ? { signal } : {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...(getApiKey() ? { 'X-API-Key': getApiKey()! } : {}) }, body: JSON.stringify(body), signal,

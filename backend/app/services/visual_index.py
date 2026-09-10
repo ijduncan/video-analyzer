@@ -62,7 +62,7 @@ def samples(shots):
 
 
 def status(job):
-    from app.services import composition_index
+    from app.services import composition_index, shape_index
     key, shots = source_info(job)
     total = sum(1 for _ in samples(shots))
     db = connection(job, key)
@@ -74,7 +74,7 @@ def status(job):
     return {'job_id': job.job_id, 'revision': key, 'total': total, 'indexed': done - failed, 'failed': failed,
             'status': 'indexing' if running else 'complete' if done == total and not failed else 'partial' if done else 'not_started',
             'error': _errors.get(job.job_id), 'sampling': '5 interior frames per shot',
-            'composition': composition_index.status(job, key)}
+            'composition': composition_index.status(job, key), 'shape': shape_index.status(job, key)}
 
 
 async def frame(job, key, seconds):
@@ -140,7 +140,9 @@ def start(job):
 
 async def stop(job_id):
     from app.services.composition_index import stop as stop_composition
+    from app.services.shape_index import stop as stop_shape
     await stop_composition(job_id)
+    await stop_shape(job_id)
     task = _tasks.get(job_id)
     if task and not task.done():
         task.cancel()
@@ -150,7 +152,9 @@ async def stop(job_id):
 
 async def shutdown():
     from app.services.composition_index import shutdown as shutdown_composition
+    from app.services.shape_index import shutdown as shutdown_shape
     await shutdown_composition()
+    await shutdown_shape()
     for job_id in list(_tasks):
         await stop(job_id)
 
@@ -165,8 +169,8 @@ def validate_frame(job, shot_number, seconds, revision):
     return key, shot
 
 
-def search(source, source_job, source_shot, targets, weights, region, limit, source_composition=None):
-    from app.services import composition_index
+def search(source, source_job, source_shot, targets, weights, region, limit, source_composition=None, source_form=None, align_shape=False):
+    from app.services import composition_index, shape_index, shape_geometry
     best = {}
     states = []
     for job in targets:
@@ -174,6 +178,7 @@ def search(source, source_job, source_shot, targets, weights, region, limit, sou
         states.append(state)
         key, shots = source_info(job)
         profiles = composition_index.cached(job, key) if weights['composition'] else {}
+        silhouettes = shape_index.cached(job, key) if weights['shape'] else {}
         by_number = {s['shot_number']: s for s in shots}
         db = connection(job, key)
         try:
@@ -183,9 +188,21 @@ def search(source, source_job, source_shot, targets, weights, region, limit, sou
                 data = json.loads(raw)
                 if not data['usable']:
                     continue
-                score = compare(source, data, weights, region)
-                if region and weights['shape'] and score['source_box'] is None:
-                    continue
+                # Contours are legacy descriptors; paid shape/framing never fall back to them.
+                score = compare(source, data, {'shape': 0, 'composition': 0, 'color': 1})
+                if weights['shape']:
+                    if source_form is None:
+                        continue
+                    forms = silhouettes.get(round(seconds * 1000), {}).get('forms', [])
+                    candidates = [(shape_geometry.compare(source_form, f, align_shape), f) for f in forms]
+                    candidates = [(s, f) for s, f in candidates if s is not None]
+                    if not candidates:
+                        continue
+                    geometry, form = max(candidates, key=lambda item: item[0]['score'])
+                    score.update(source_box=None, target_box=None, source_outline=source_form['outline'],
+                                 target_outline=form['outline'], shape_label=form['label'], shape_geometry=geometry,
+                                 box_basis='Gemini silhouette', shape_summary=f"{source_form['label']} → {form['label']}")
+                    score['scores']['shape'] = geometry['score']
                 if weights['composition']:
                     profile = profiles.get(round(seconds * 1000))
                     framing = composition_index.compare(source_composition, profile)
@@ -195,9 +212,11 @@ def search(source, source_job, source_shot, targets, weights, region, limit, sou
                     score['score'] = round(sum(score['scores'][k] * weights[k] for k in weights) / sum(weights.values()), 4)
                     score['reasons'] = framing['reasons']
                     score['composition_summary'] = framing['summary']
-                    score['source_box'] = composition_index.xywh(source_composition)
-                    score['target_box'] = composition_index.xywh(profile)
-                    score['box_basis'] = 'Gemini dominant subject'
+                    if not weights['shape']:
+                        score['source_box'] = composition_index.xywh(source_composition)
+                        score['target_box'] = composition_index.xywh(profile)
+                        score['box_basis'] = 'Gemini dominant subject'
+                score['score'] = round(sum(score['scores'][k] * weights[k] for k in weights) / sum(weights.values()), 4)
                 shot = by_number.get(shot_number)
                 if not shot:
                     continue
@@ -213,5 +232,5 @@ def search(source, source_job, source_shot, targets, weights, region, limit, sou
         finally:
             db.close()
     return {'matches': sorted(best.values(), key=lambda item: item['score'], reverse=True)[:limit], 'indexes': states,
-            'score_basis': 'gemini_framing_and_local_visual_measurements' if weights['composition'] else 'local_visual_measurements',
-            'source_composition': source_composition, 'motion_supported': False}
+            'score_basis': 'gemini_silhouettes_and_visual_measurements' if weights['shape'] else 'gemini_framing_and_local_visual_measurements' if weights['composition'] else 'local_visual_measurements',
+            'source_composition': source_composition, 'source_shape': source_form, 'motion_supported': False}
