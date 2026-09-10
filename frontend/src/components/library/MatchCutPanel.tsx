@@ -8,6 +8,7 @@ import type { VisualIndex, VisualMatch, VisualResults, VisualShape } from '../..
 import { errorMessage, timestamp } from './format'
 import { readMatchCutSession, saveMatchCutSession } from './matchCutSession'
 import { ProjectSearchPicker } from './ProjectSearchPicker'
+import { simplifyOutline } from './freehandOutline'
 import './MatchCutPanel.css'
 
 const AXES = ['shape', 'composition', 'color'] as const
@@ -21,7 +22,7 @@ export function MatchCutPanel({ asset, shots, initialShot, useInitialShot = fals
     if (!session || !shots.some(s => s.shot_number === session.shotNumber)) return null
     if (!useInitialShot || !initialShot) return session
     return { ...session, shotNumber: initialShot.shot_number, seconds: midpoint(initialShot),
-      region: null, sourceShapeId: null, knownShapes: null, result: null, resultKey: '', searchIntent: '', selected: null }
+      region: null, sourceOutline: null, sourceShapeId: null, knownShapes: null, result: null, resultKey: '', searchIntent: '', selected: null }
   })
   const [shotNumber, setShotNumber] = useState(saved?.shotNumber ?? initialShot?.shot_number ?? shots[0]?.shot_number)
   const shot = shots.find(s => s.shot_number === shotNumber) || shots[0]
@@ -33,6 +34,8 @@ export function MatchCutPanel({ asset, shots, initialShot, useInitialShot = fals
   const [validatedScope, setValidatedScope] = useState('')
   const [weights, setWeights] = useState(saved?.weights ?? { shape: 1, composition: 0, color: 0 })
   const [region, setRegion] = useState<number[] | null>(saved?.region ?? null)
+  const [sourceOutline, setSourceOutline] = useState<number[][] | null>(saved?.sourceOutline ?? null)
+  const [drawingMode, setDrawingMode] = useState<'outline' | 'box'>(saved?.drawingMode ?? 'outline')
   const [sourceShapeId, setSourceShapeId] = useState<number | null>(saved?.sourceShapeId ?? null)
   const [alignShape, setAlignShape] = useState(saved?.alignShape ?? true)
   const [knownShapes, setKnownShapes] = useState<{ key: string; forms: VisualShape[] } | null>(saved?.knownShapes ?? null)
@@ -49,7 +52,7 @@ export function MatchCutPanel({ asset, shots, initialShot, useInitialShot = fals
   const request = useRef<AbortController | null>(null)
   const sourceIndex = indexes.find(i => i.job_id === asset.job_id)
   const scopeKey = JSON.stringify([...new Set([asset.job_id, ...targetIds])])
-  const searchKey = JSON.stringify([shotNumber, frameSeconds, targetIds, weights, region, sourceShapeId, alignShape, indexes.map(i => [i.job_id, i.revision, i.composition?.version, i.shape?.version])])
+  const searchKey = JSON.stringify([shotNumber, frameSeconds, targetIds, weights, region, sourceShapeId, alignShape, indexes.map(i => [i.job_id, i.revision, i.composition?.version, i.shape?.version]), ...(sourceOutline ? [sourceOutline] : [])])
   const [resultKey, setResultKey] = useState(saved?.resultKey ?? '')
   const [searchIntent, setSearchIntent] = useState(saved?.searchIntent ?? '')
   const ready = validatedScope === scopeKey
@@ -60,7 +63,8 @@ export function MatchCutPanel({ asset, shots, initialShot, useInitialShot = fals
   const number = shot?.shot_number
   const shapeFrameKey = JSON.stringify([asset.job_id, number, frameSeconds, sourceRevision, sourceIndex?.shape?.version])
   const forms = knownShapes?.key === shapeFrameKey ? knownShapes.forms : []
-  function selectRegion(value: number[] | null) { setRegion(value); setSourceShapeId(null) }
+  function selectRegion(value: number[] | null) { setRegion(value); setSourceShapeId(null); setSourceOutline(null) }
+  function drawOutline(value: number[][]) { setSourceOutline(value); setRegion(null); setSourceShapeId(null); setSelected(null); setError('') }
   async function identify() {
     if (!number || !sourceRevision) return
     request.current?.abort()
@@ -116,9 +120,9 @@ export function MatchCutPanel({ asset, shots, initialShot, useInitialShot = fals
     // Persist user state, not playback, errors or in-flight request flags. Indexes
     // are revalidated before saved candidates can be previewed or exported.
     saveMatchCutSession(asset.job_id, { run, shotNumber, seconds, targetIds, weights,
-      region, sourceShapeId, alignShape, knownShapes, indexes, result, resultKey,
+      region, sourceOutline, drawingMode, sourceShapeId, alignShape, knownShapes, indexes, result, resultKey,
       searchIntent, selected, incoming, handle })
-  }, [asset.job_id, run, shotNumber, seconds, targetIds, weights, region, sourceShapeId,
+  }, [asset.job_id, run, shotNumber, seconds, targetIds, weights, region, sourceOutline, drawingMode, sourceShapeId,
     alignShape, knownShapes, indexes, result, resultKey, searchIntent, selected, incoming, handle])
 
   async function build() {
@@ -138,7 +142,7 @@ export function MatchCutPanel({ asset, shots, initialShot, useInitialShot = fals
     try {
       const data = await visualRequest<VisualResults>(`${asset.job_id}/search`, {
         shot_number: number, seconds: frameSeconds, revision: sourceRevision,
-        target_ids: targetIds, ...weights, region: weights.shape ? region : null, prepare_composition: !automatic, prepare_shape: !automatic, source_shape_id: sourceShapeId, align_shape: alignShape,
+        target_ids: targetIds, ...weights, region: weights.shape ? region : null, prepare_composition: !automatic, prepare_shape: !automatic, source_shape_id: sourceShapeId, align_shape: alignShape, source_outline: weights.shape ? sourceOutline : null,
       }, controller.signal)
       if (controller.signal.aborted) return
       setResult(data); setResultKey(searchKey)
@@ -146,7 +150,7 @@ export function MatchCutPanel({ asset, shots, initialShot, useInitialShot = fals
       if (!automatic) setSelected(null)
     } catch (err) { if (!controller.signal.aborted) setError(errorMessage(err)) }
     finally { if (!controller.signal.aborted) setWorking(false) }
-  }, [number, sourceRevision, ready, coverage, asset.job_id, frameSeconds, targetIds, weights, region, sourceShapeId, alignShape, shapeFrameKey, searchKey])
+  }, [number, sourceRevision, ready, coverage, asset.job_id, frameSeconds, targetIds, weights, region, sourceOutline, sourceShapeId, alignShape, shapeFrameKey, searchKey])
   useEffect(() => {
     // Returning to an unfinished search only reads cached analysis. It never
     // starts additional Gemini work; active server jobs keep their own progress.
@@ -163,7 +167,7 @@ export function MatchCutPanel({ asset, shots, initialShot, useInitialShot = fals
       incoming: { job_id: selected.job_id, title: selected.title, filename: selected.filename, shot_number: selected.shot_number, revision: selected.revision,
         start_seconds: incoming, end_seconds: Math.min(selected.end_seconds, incoming + handle) },
       discovery: { sampled_outgoing_seconds: frameSeconds, sampled_incoming_seconds: selected.seconds,
-        scores: selected.scores, score_basis: result?.score_basis || 'local_visual_measurements', weights, source_region: region, source_shape: result?.source_shape, target_outline: selected.target_outline, target_shape: selected.shape_label, shape_geometry: selected.shape_geometry, align_shape: alignShape } }
+        scores: selected.scores, score_basis: result?.score_basis || 'local_visual_measurements', weights, source_region: region, source_outline: sourceOutline, source_shape: result?.source_shape, target_outline: selected.target_outline, target_shape: selected.shape_label, shape_geometry: selected.shape_geometry, align_shape: alignShape } }
     const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }))
     const link = document.createElement('a'); link.href = url; link.download = `match-cut-${shot.shot_number}-${selected.shot_number}.json`; link.click()
     setTimeout(() => URL.revokeObjectURL(url), 1000)
@@ -178,11 +182,11 @@ export function MatchCutPanel({ asset, shots, initialShot, useInitialShot = fals
   const partialSearch = targets.some(i => i.status !== 'complete' ||
     (weights.shape > 0 && (i.shape?.indexed || 0) < (i.shape?.total || 0)) ||
     (weights.composition > 0 && (i.composition?.indexed || 0) < (i.composition?.total || 0)))
-  const selectedForm = !stale && result?.source_shape ? result.source_shape : region ? null : forms[sourceShapeId ?? 0]
+  const selectedForm = sourceOutline ? { label: 'Drawn outline', outline: sourceOutline } : !stale && result?.source_shape ? result.source_shape : region ? null : forms[sourceShapeId ?? 0]
   function pickForm(point: number[]) {
     const hits = forms.map((form, id) => ({ form, id })).filter(({ form }) => contains(form.outline, point))
     hits.sort((a, b) => a.form.box[2]*a.form.box[3]-b.form.box[2]*b.form.box[3])
-    if (hits.length) { setSourceShapeId(hits[0].id); setRegion(null) }
+    if (hits.length) { setSourceShapeId(hits[0].id); setRegion(null); setSourceOutline(null) }
   }
   const sourceBox = !stale && weights.composition && result?.source_composition?.subject_box
   const subjectBox = sourceBox ? [sourceBox[1] / 1000, sourceBox[0] / 1000, (sourceBox[3] - sourceBox[1]) / 1000, (sourceBox[2] - sourceBox[0]) / 1000] : null
@@ -191,7 +195,7 @@ export function MatchCutPanel({ asset, shots, initialShot, useInitialShot = fals
     <div className="mc-controls">
       <label className="lw-field">Outgoing shot<select aria-label="Outgoing shot" value={shot.shot_number} onChange={event => {
         const next = shots.find(s => s.shot_number === Number(event.target.value))!
-        setShotNumber(next.shot_number); setSeconds(midpoint(next)); setFrameSeconds(midpoint(next)); setRegion(null); setSourceShapeId(null); setSelected(null)
+        setShotNumber(next.shot_number); setSeconds(midpoint(next)); setFrameSeconds(midpoint(next)); setRegion(null); setSourceShapeId(null); setSourceOutline(null); setSelected(null)
       }}>{shots.map(s => <option key={s.shot_number} value={s.shot_number}>Shot {String(s.shot_number).padStart(2, '0')} · {s.start_time}</option>)}</select></label>
       <ProjectSearchPicker projects={projects} selectedIds={targetIds} onChange={setTargetIds} />
       <div className="mc-weights">{AXES.map(axis => <label key={axis}>{axis}<input aria-label={`${axis} weight`} type="range" min="0" max="1" step="0.1" value={weights[axis]} onChange={event => setWeights(w => ({ ...w, [axis]: Number(event.target.value) }))} /><span>{weights[axis] === 0 ? 'Off' : `${Math.round(weights[axis] * 100)}%`}</span></label>)}</div>
@@ -207,16 +211,17 @@ export function MatchCutPanel({ asset, shots, initialShot, useInitialShot = fals
     {notice && <p role="status">{notice}</p>}
     <div className="mc-pair">
       <div><div className="mc-frame-heading"><strong>A · Outgoing</strong><span>{time(frameSeconds)}</span></div>
-        <FrameRegion label="Outgoing frame" url={sourceIndex ? visualFrame(asset.job_id, shot.shot_number, frameSeconds, sourceIndex.revision) : undefined} region={weights.shape && (stale || !result?.source_shape) ? region : null} box={weights.shape ? null : subjectBox || (!stale ? selected?.source_box : null)} outline={weights.shape ? selectedForm?.outline : null} outlines={weights.shape ? forms.map(f => f.outline) : undefined} onPick={weights.shape ? pickForm : undefined} onRegion={weights.shape ? selectRegion : undefined} />
+        <FrameRegion key={`${shot.shot_number}:${frameSeconds}`} drawingMode={drawingMode} onOutline={weights.shape ? drawOutline : undefined} onDrawError={() => setError('Trace a larger outline around the subject without crossing the line.')} label="Outgoing frame" url={sourceIndex ? visualFrame(asset.job_id, shot.shot_number, frameSeconds, sourceIndex.revision) : undefined} region={weights.shape && (stale || !result?.source_shape) ? region : null} box={weights.shape ? null : subjectBox || (!stale ? selected?.source_box : null)} outline={weights.shape ? selectedForm?.outline : null} outlines={weights.shape && !sourceOutline && drawingMode === 'box' ? forms.map(f => f.outline) : undefined} onPick={weights.shape ? pickForm : undefined} onRegion={weights.shape ? selectRegion : undefined} />
         {!stale && weights.composition > 0 && result?.source_composition && <p className="mc-composition-summary">{result.source_composition.summary}<small>{weights.shape ? 'Framing: Gemini interpretation' : 'Outlined: dominant subject · Gemini interpretation'}</small></p>}
-        <div className="mc-trim"><input type="range" aria-label="Outgoing cut frame" min={start} max={Math.max(start, end - step)} step={step} value={seconds} onChange={event => { setSeconds(Number(event.target.value)); setRegion(null); setSourceShapeId(null) }} /><input type="number" aria-label="Outgoing cut seconds" min={start} max={end - step} step={step} value={Number(seconds.toFixed(3))} onChange={event => { if (event.target.value !== '') { setSeconds(Math.min(end - step, Math.max(start, Number(event.target.value)))); setRegion(null); setSourceShapeId(null) } }} /></div>
+        <div className="mc-trim"><input type="range" aria-label="Outgoing cut frame" min={start} max={Math.max(start, end - step)} step={step} value={seconds} onChange={event => { setSeconds(Number(event.target.value)); setRegion(null); setSourceShapeId(null); setSourceOutline(null) }} /><input type="number" aria-label="Outgoing cut seconds" min={start} max={end - step} step={step} value={Number(seconds.toFixed(3))} onChange={event => { if (event.target.value !== '') { setSeconds(Math.min(end - step, Math.max(start, Number(event.target.value)))); setRegion(null); setSourceShapeId(null); setSourceOutline(null) } }} /></div>
         {weights.shape > 0 && <div className="mc-shape-controls">
+          <div className="lw-segmented" aria-label="Shape selection tool"><button aria-pressed={drawingMode === 'outline'} className={drawingMode === 'outline' ? 'is-active' : ''} onClick={() => setDrawingMode('outline')}>Draw outline</button><button aria-pressed={drawingMode === 'box'} className={drawingMode === 'box' ? 'is-active' : ''} onClick={() => setDrawingMode('box')}>Select detected shape</button></div>
           <button className="lw-button" onClick={identify} disabled={working || !sourceRevision || seconds !== frameSeconds}>Identify shapes</button>
-          {!!forms.length && <label className="lw-field">Shape<select aria-label="Source shape" value={sourceShapeId ?? ''} onChange={event => { setSourceShapeId(event.target.value === '' ? null : Number(event.target.value)); setRegion(null) }}><option value="">{region ? 'Drawn selection' : 'Main visible form'}</option>{forms.map((form, id) => <option key={id} value={id}>{form.label}</option>)}</select></label>}
+          {!!forms.length && <label className="lw-field">Shape<select aria-label="Source shape" value={sourceOutline ? 'drawn' : sourceShapeId ?? ''} onChange={event => { if (event.target.value === 'drawn') return; setSourceShapeId(event.target.value === '' ? null : Number(event.target.value)); setRegion(null); setSourceOutline(null) }}>{sourceOutline && <option value="drawn">Drawn outline</option>}<option value="">{region ? 'Drawn selection' : 'Main visible form'}</option>{forms.map((form, id) => <option key={id} value={id}>{form.label}</option>)}</select></label>}
           <label className="mc-align"><input type="checkbox" checked={alignShape} onChange={event => setAlignShape(event.target.checked)} />Match position and size too</label>
-          <small>Identify shapes, then click a form or draw around it. Outlines are approximate.</small>
+          <small>{drawingMode === 'outline' ? 'Drag around the entire visible subject; release to close the outline. Your outline is used directly.' : 'Click an identified shape or drag a box to select one.'}</small>
           {selectedForm && <p>Matching: <strong>{selectedForm.label}</strong></p>}
-          {region && <button className="lw-text-button" onClick={() => selectRegion(null)}>Clear selection</button>}
+          {(region || sourceOutline) && <button className="lw-text-button" onClick={() => selectRegion(null)}>Clear selection</button>}
         </div>}
 
       </div>
@@ -253,18 +258,36 @@ function Box({ box }: { box?: number[] | null }) {
   return box ? <span className="mc-box" style={{ left: `${box[0] * 100}%`, top: `${box[1] * 100}%`, width: `${box[2] * 100}%`, height: `${box[3] * 100}%` }} /> : null
 }
 
-function FrameRegion({ url, region, box, outline, outlines, onPick, onRegion, label = 'Incoming frame' }: { label?: string; url?: string; region?: number[] | null; box?: number[] | null; outline?: number[][] | null; outlines?: number[][][]; onPick?: (point: number[]) => void; onRegion?: (region: number[] | null) => void }) {
+function FrameRegion({ url, region, box, outline, outlines, onPick, onRegion, onOutline, onDrawError, drawingMode = 'box', label = 'Incoming frame' }: { drawingMode?: 'outline' | 'box'; onOutline?: (points: number[][]) => void; onDrawError?: () => void; label?: string; url?: string; region?: number[] | null; box?: number[] | null; outline?: number[][] | null; outlines?: number[][][]; onPick?: (point: number[]) => void; onRegion?: (region: number[] | null) => void }) {
   const anchor = useRef<number[] | null>(null)
+  const path = useRef<number[][]>([])
+  const [trace, setTrace] = useState<number[][] | null>(null)
   const [drag, setDrag] = useState<number[] | null>(null)
   const [loaded, setLoaded] = useState('')
   const [failed, setFailed] = useState('')
   const [aspect, setAspect] = useState(16 / 9)
   function point(event: PointerEvent<HTMLDivElement>) { const rect = event.currentTarget.getBoundingClientRect(); return [Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)), Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height))] }
   function rectangle(p: number[]) { const a = anchor.current!; return [Math.min(a[0], p[0]), Math.min(a[1], p[1]), Math.abs(a[0] - p[0]), Math.abs(a[1] - p[1])] }
-  return <div className={`mc-frame ${onRegion ? 'can-select' : ''}`} style={{ aspectRatio: aspect }} aria-label={onRegion ? `${label}. Drag to select a region.` : label} onPointerDown={event => { if (!onRegion || loaded !== url || event.button !== 0) return; anchor.current = point(event); event.currentTarget.setPointerCapture(event.pointerId) }} onPointerMove={event => { if (anchor.current) setDrag(rectangle(point(event))) }} onPointerUp={event => { if (!anchor.current) return; const r = rectangle(point(event)); anchor.current = null; setDrag(null); if (r[2] >= .02 && r[3] >= .02) onRegion?.(r); else onPick?.(point(event)) }} onPointerCancel={() => { anchor.current = null; setDrag(null) }}>
+  return <div className={`mc-frame ${onRegion ? 'can-select' : ''}`} style={{ aspectRatio: aspect }} aria-label={onRegion ? `${label}. ${drawingMode === 'outline' ? 'Drag to draw an outline.' : 'Drag to select a region.'}` : label} onPointerDown={event => { if (!onRegion || loaded !== url || event.button !== 0) return; anchor.current = point(event); path.current = [anchor.current.map(v => v * 1000)]; event.currentTarget.setPointerCapture(event.pointerId) }} onPointerMove={event => {
+      if (!anchor.current) return
+      if (drawingMode === 'outline' && onOutline) {
+        const p = point(event).map(v => v * 1000), last = path.current[path.current.length - 1]
+        if (path.current.length < 2048 && Math.hypot(p[0] - last[0], p[1] - last[1]) >= 2) { path.current.push(p); setTrace([...path.current]) }
+      } else setDrag(rectangle(point(event)))
+    }} onPointerUp={event => {
+      if (!anchor.current) return
+      const r = rectangle(point(event)); anchor.current = null; setDrag(null); setTrace(null)
+      if (drawingMode === 'outline' && onOutline && path.current.length > 2) {
+        const outline = simplifyOutline([...path.current, point(event).map(v => v * 1000)])
+        if (outline) onOutline(outline); else onDrawError?.()
+      } else if (drawingMode === 'box' && r[2] >= .02 && r[3] >= .02) onRegion?.(r)
+      else if (r[2] < .02 && r[3] < .02) onPick?.(point(event))
+      else onDrawError?.()
+      path.current = []
+    }} onPointerCancel={() => { anchor.current = null; path.current = []; setDrag(null); setTrace(null) }}>
     {url && <img key={url} src={url} alt="Video frame" draggable={false} onLoad={event => { setLoaded(url); setFailed(''); setAspect(event.currentTarget.naturalWidth / event.currentTarget.naturalHeight) }} onError={() => setFailed(url)} />}
     {(!url || loaded !== url) && <span className="mc-frame-status">{url && failed === url ? 'Frame unavailable. Try another time.' : 'Loading frame…'}</span>}
-    {loaded === url && <><Box box={drag || region || box} />{outlines?.map((points, i) => <Outline key={i} points={points} faint />)}<Outline points={outline} /></>}
+    {loaded === url && <><Box box={drag || region || box} />{outlines?.map((points, i) => <Outline key={i} points={points} faint />)}<Outline points={trace || outline} /></>}
   </div>
 }
 

@@ -7,6 +7,8 @@ export interface MatchCutSession {
   targetIds: string[]
   weights: { shape: number; composition: number; color: number }
   region: number[] | null
+  sourceOutline?: number[][] | null
+  drawingMode?: 'outline' | 'box'
   sourceShapeId: number | null
   alignShape: boolean
   knownShapes: { key: string; forms: VisualShape[] } | null
@@ -36,6 +38,8 @@ export function readMatchCutSession(id: string, run: string | null): MatchCutSes
       typeof saved.resultKey !== 'string' || typeof saved.alignShape !== 'boolean' ||
       !Number.isFinite(saved.incoming) || ![.5, 1, 2, 3, 5].includes(saved.handle) ||
       (saved.region !== null && (!Array.isArray(saved.region) || saved.region.length !== 4 || !saved.region.every(Number.isFinite))) ||
+      (saved.sourceOutline != null && (!Array.isArray(saved.sourceOutline) || saved.sourceOutline.length < 3 || saved.sourceOutline.length > 96 || !saved.sourceOutline.every(p => Array.isArray(p) && p.length === 2 && p.every(v => Number.isFinite(v) && v >= 0 && v <= 1000)))) ||
+      (saved.drawingMode !== undefined && saved.drawingMode !== 'outline' && saved.drawingMode !== 'box') ||
       (saved.sourceShapeId !== null && (!Number.isInteger(saved.sourceShapeId) || saved.sourceShapeId < 0)) ||
       (saved.knownShapes !== null && (typeof saved.knownShapes?.key !== 'string' || !Array.isArray(saved.knownShapes?.forms))) ||
       (saved.result && !Array.isArray(saved.result.matches))) return null

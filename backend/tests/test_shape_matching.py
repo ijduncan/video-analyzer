@@ -133,6 +133,38 @@ def test_missing_shapes_do_not_fall_back_to_random_contours(client, visual_asset
     assert client.post(f'/api/visual/{ident}/search', json={**body, 'prepare_shape': True}).status_code == 400
 
 
+def test_drawn_outline_overrides_source_parts_without_provider_call(client, visual_asset, monkeypatch):
+    ident = visual_asset.job_id
+    client.post(f'/api/visual/{ident}/index')
+    state = wait_index(client, ident)
+    seed(visual_asset, state['revision'])
+    # Replace the source's cached wheel with an unrelated detected part.
+    db = shape_index.db_for(visual_asset, state['revision'])
+    db.execute('UPDATE shape SET data=? WHERE millis=1500', (json.dumps({'forms': [rectangle()]}),))
+    db.commit(); db.close()
+    async def forbidden(*args, **kwargs):
+        pytest.fail('A supplied outline must not require source identification')
+    monkeypatch.setattr(shape_index, 'ensure', forbidden)
+    outline = circle()['outline']
+    body = {'shot_number': 1, 'seconds': 1.5, 'revision': state['revision'], 'target_ids': [ident],
+            'shape': 1, 'composition': 0, 'color': 0, 'prepare_shape': False,
+            'source_outline': outline, 'align_shape': False}
+    data = client.post(f'/api/visual/{ident}/search', json=body).json()
+    assert data['source_shape']['outline'] == outline
+    assert data['source_shape']['label'] == 'Drawn outline'
+    assert data['matches'][0]['source_outline'] == outline
+    assert data['matches'][0]['shape_label'] == 'moon'
+    assert client.post(f'/api/visual/{ident}/search', json={**body, 'align_shape': True}).json()['matches'] == []
+    assert client.post(f'/api/visual/{ident}/search', json={**body, 'source_shape_id': 0}).status_code == 422
+    assert client.post(f'/api/visual/{ident}/search', json={**body, 'source_outline': [[0, 0], [1000, 1000], [1000, 0], [0, 1000]]}).status_code == 422
+    # Even an explicit search skips source Gemini identification; only target
+    # indexing may be scheduled if those cached silhouettes are incomplete.
+    monkeypatch.setattr(shape_index, 'start', lambda *args, **kwargs: None)
+    response = client.post(f'/api/visual/{ident}/search', json={**body, 'prepare_shape': True}, headers={'X-API-Key': 'fixture'})
+    assert response.status_code == 200, response.text
+    assert response.json()['source_shape']['outline'] == outline
+
+
 def test_identification_cache_usage_and_source_revision(client, visual_asset, monkeypatch):
     calls = []
     async def generate_content(**kwargs):

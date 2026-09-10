@@ -29,6 +29,14 @@ test('reads persisted sessions without an in-memory copy', () => {
   assert.deepEqual(readMatchCutSession('reload', 'analysis-1'), session)
 })
 
+test('preserves a freehand outline with its selection tool', () => {
+  const drawn = { ...session, region: null, drawingMode: 'outline', sourceOutline: [[100, 100], [500, 200], [400, 900], [50, 700]] }
+  records.set('video-analyzer:match-cuts:v1:drawn', JSON.stringify(drawn))
+  assert.deepEqual(readMatchCutSession('drawn', 'analysis-1'), drawn)
+  records.set('video-analyzer:match-cuts:v1:bad-outline', JSON.stringify({ ...drawn, sourceOutline: [[-1, 100], [10, 50], [80, 90]] }))
+  assert.equal(readMatchCutSession('bad-outline', 'analysis-1'), null)
+})
+
 test('invalidates a previous analysis run', () => {
   saveMatchCutSession('reanalyzed', session)
   assert.equal(readMatchCutSession('reanalyzed', 'analysis-2'), null)

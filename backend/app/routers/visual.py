@@ -28,6 +28,7 @@ class MatchRequest(BaseModel):
     prepare_composition: bool = True
     prepare_shape: bool = True
     source_shape_id: int | None = Field(default=None, ge=0, le=5)
+    source_outline: list[list[float]] | None = Field(default=None, min_length=3, max_length=96)
     align_shape: bool = True
 
     @model_validator(mode='after')
@@ -38,6 +39,10 @@ class MatchRequest(BaseModel):
             x, y, w, h = self.region
             if not all(math.isfinite(v) for v in self.region) or min(x, y) < 0 or min(w, h) < .02 or x + w > 1.001 or y + h > 1.001:
                 raise ValueError('Choose a valid region inside the frame.')
+        if self.source_outline is not None:
+            if self.region is not None or self.source_shape_id is not None:
+                raise ValueError('Use either a drawn outline or a detected shape selection.')
+            shape_geometry.Form(label='Drawn outline', outline=self.source_outline)
         return self
 
 
@@ -117,15 +122,17 @@ async def find_matches(job_id: str, body: MatchRequest, api_key: str | None = De
         if body.shape:
             shapes = shape_index.cached(job, key).get(round(body.seconds * 1000))
             if body.prepare_shape:
-                needs_key = shapes is None or shapes.get('needs_retry')
+                needs_key = body.source_outline is None and (shapes is None or shapes.get('needs_retry'))
                 for target in targets:
                     state = shape_index.status(target, visual_index.source_info(target)[0])
                     needs_key = needs_key or state['indexed'] < state['total']
                 if not (api_key or settings.google_api_key) and needs_key:
                     raise HTTPException(400, 'Shape identification uses Gemini. Add a key in Settings first.')
-                shapes = await shape_index.ensure(job, key, body.seconds, api_key)
+                if body.source_outline is None:
+                    shapes = await shape_index.ensure(job, key, body.seconds, api_key)
             forms = shapes['forms'] if shapes else []
-            source_form = shape_geometry.select(forms, body.region, body.source_shape_id)
+            source_form = (shape_geometry.describe({'label': 'Drawn outline', 'outline': body.source_outline}, source['aspect_ratio'])
+                           if body.source_outline is not None else shape_geometry.select(forms, body.region, body.source_shape_id))
             if body.prepare_shape and source_form is None:
                 raise ValueError('No clear silhouette was identified. Choose another frame or use Color or Composition.')
         profile = None
