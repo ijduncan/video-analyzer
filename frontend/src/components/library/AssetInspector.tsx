@@ -7,6 +7,7 @@ import { Icon } from './Icon'
 import { bytes, duration, errorMessage, reviewLabel, splitTags, timestamp } from './format'
 import { analysisFacts, analysisStageLabel, isActiveAnalysis } from './analysisProgress'
 import { ExportPanel } from './ExportPanel'
+import { SearchHighlight } from './SearchHighlight'
 import './VideoWorkspace.css'
 
 interface Props {
@@ -199,11 +200,11 @@ function sameShot(a: Shot, b: Shot) {
   return a.shot_number === b.shot_number && a.start_time === b.start_time && a.end_time === b.end_time
 }
 
-function AnalysisFields({ value }: { value: unknown }) {
+function AnalysisFields({ value, query = '' }: { value: unknown; query?: string }) {
   if (value == null || value === '') return null
-  if (Array.isArray(value)) return <>{value.map((item, index) => <div key={index}><AnalysisFields value={item} /></div>)}</>
-  if (typeof value !== 'object') return <span>{String(value)}</span>
-  return <dl className="vw-analysis-fields">{Object.entries(value).filter(([key, item]) => !['scene_number', 'total_runtime', 'total_scenes', 'total_shots'].includes(key) && item != null && item !== '').map(([key, item]) => <div key={key}><dt>{key.replaceAll('_', ' ')}</dt><dd><AnalysisFields value={item} /></dd></div>)}</dl>
+  if (Array.isArray(value)) return <>{value.map((item, index) => <div key={index}><AnalysisFields value={item} query={query} /></div>)}</>
+  if (typeof value !== 'object') return <span><SearchHighlight text={String(value)} query={query} /></span>
+  return <dl className="vw-analysis-fields">{Object.entries(value).filter(([key, item]) => !['scene_number', 'total_runtime', 'total_scenes', 'total_shots'].includes(key) && item != null && item !== '').map(([key, item]) => <div key={key}><dt>{key.replaceAll('_', ' ')}</dt><dd><AnalysisFields value={item} query={query} /></dd></div>)}</dl>
 }
 
 const SHOTS_PER_PAGE = 48
@@ -269,19 +270,20 @@ function ShotBrowser({ asset, shots, active, busy, selectedShot, selection, stal
       {staleSelection && <div className="lw-inline-error">The analysis changed. Select shots again before exporting. <button className="lw-text-button" onClick={onClearSelection}>Clear selection</button></div>}
     </div>
     {currentResult?.error && <div className="lw-inline-error" role="alert">{currentResult.error}</div>}
-    {shown.length > 0 && <div className="vw-shot-grid">{shown.map(shot => <ShotEditor key={`${shot.shot_number}-${shot.start_time}-${shot.end_time}`} jobId={asset.job_id} shot={shots.find(item => sameShot(item, shot)) || shot} annotation={asset.shot_annotations?.[String(shot.shot_number)]} selected={!!selectedShot && sameShot(shot, selectedShot)} exportSelected={selection.some(item => sameShot(item, shot))} match={'match_context' in shot ? shot as LibraryShot : undefined} canPreview={!!asset.preview_url} onToggle={() => onToggle(shot)} onExport={() => onExport(shot)} onSeek={() => onSeek(shot)} onRefresh={onRefresh} />)}</div>}
+    {shown.length > 0 && <div className="vw-shot-grid">{shown.map(shot => <ShotEditor key={`${shot.shot_number}-${shot.start_time}-${shot.end_time}`} jobId={asset.job_id} shot={shots.find(item => sameShot(item, shot)) || shot} annotation={asset.shot_annotations?.[String(shot.shot_number)]} selected={!!selectedShot && sameShot(shot, selectedShot)} exportSelected={selection.some(item => sameShot(item, shot))} query={search} match={'match_context' in shot ? shot as LibraryShot : undefined} canPreview={!!asset.preview_url} onToggle={() => onToggle(shot)} onExport={() => onExport(shot)} onSeek={() => onSeek(shot)} onRefresh={onRefresh} />)}</div>}
     {!loading && !shown.length && !currentResult?.error && <div className="lw-panel-empty"><Icon name="film" size={30} /><p>{search ? 'No shots match this search.' : busy ? 'Shots appear as each section finishes.' : 'Analyze this video to find shots.'}</p></div>}
     {pageCount > 1 && <nav className="vw-shot-pagination" aria-label="Shot pages"><button className="lw-button" disabled={visiblePage === 0 || loading} onClick={() => setPage(visiblePage - 1)}>Previous</button><span>{visiblePage + 1} / {pageCount}</span><button className="lw-button" disabled={visiblePage >= pageCount - 1 || loading} onClick={() => setPage(visiblePage + 1)}>Next</button></nav>}
   </>
 }
 
-function ShotEditor({ jobId, shot, annotation, selected, exportSelected, match, canPreview, onToggle, onExport, onSeek, onRefresh }: {
+function ShotEditor({ jobId, shot, annotation, selected, exportSelected, match, query, canPreview, onToggle, onExport, onSeek, onRefresh }: {
   jobId: string
   shot: Shot & { scene_title: string }
   annotation?: ShotAnnotation
   selected: boolean
   exportSelected: boolean
   match?: LibraryShot
+  query: string
   canPreview: boolean
   onToggle: () => void
   onExport: () => void
@@ -308,15 +310,15 @@ function ShotEditor({ jobId, shot, annotation, selected, exportSelected, match, 
   return <div className={`lw-shot-detail ${selected ? 'is-selected' : ''}`}>
     <button className="vw-shot-thumbnail" disabled={!canPreview} onClick={onSeek} aria-label={`Play shot ${shot.shot_number} at ${shot.start_time}`} aria-pressed={selected}>{shot.thumbnail_url ? <img src={shot.thumbnail_url} alt="" loading="lazy" /> : <Icon name="film" size={30} />}<span className="vw-thumbnail-play"><Icon name="play" size={22} /></span></button>
     <div className="vw-shot-caption"><label className="vw-shot-select"><input type="checkbox" checked={exportSelected} onChange={onToggle} aria-label={`Select shot ${shot.shot_number} for export`} /><strong>Shot {String(shot.shot_number).padStart(2, '0')}</strong></label><span className={`lw-review-dot ${review}`} title={reviewLabel(review)} /><time>{shot.start_time} — {shot.end_time}</time></div>
-    <p>{shot.visual_description}</p><div className="lw-tags">{[shot.shot_type, shot.camera_movement, shot.mood].filter(Boolean).map((value, i) => <span key={`${value}-${i}`}>{value}</span>)}</div>
-    {match?.match_context && <details className="lw-details vw-match-context" open><summary>{match.match_sources?.join(' · ') || 'Search match'}<Icon name="down" size={13} /></summary><p>{match.match_context}</p>{match.match_sources?.includes('Section analysis') && <details className="lw-details"><summary>Section context<Icon name="down" size={13} /></summary><p>{match.section_context?.scene_description}</p><AnalysisFields value={match.section_analysis} /></details>}</details>}
-    {match?.match_sources?.includes('Custom analysis') && <details className="lw-details"><summary>Custom analysis · whole video<Icon name="down" size={13} /></summary><AnalysisFields value={match.custom_analysis} /></details>}
-    {match?.match_sources?.includes('Transcript') && <details className="lw-details"><summary>Transcript in this shot<Icon name="down" size={13} /></summary><AnalysisFields value={match.transcript_segments} /></details>}
+    <p><SearchHighlight text={shot.visual_description} query={query} /></p><div className="lw-tags">{[shot.shot_type, shot.camera_movement, shot.mood].filter(Boolean).map((value, i) => <span key={`${value}-${i}`}><SearchHighlight text={value} query={query} /></span>)}</div>
+    {match?.match_context && <details className="lw-details vw-match-context" open><summary>{match.match_sources?.join(' · ') || 'Search match'}<Icon name="down" size={13} /></summary><p><SearchHighlight text={match.match_context} query={query} /></p>{match.match_sources?.includes('Section analysis') && <details className="lw-details"><summary>Section context<Icon name="down" size={13} /></summary><p><SearchHighlight text={match.section_context?.scene_description || ''} query={query} /></p><AnalysisFields value={match.section_analysis} query={query} /></details>}</details>}
+    {match?.match_sources?.includes('Custom analysis') && <details className="lw-details"><summary>Custom analysis · whole video<Icon name="down" size={13} /></summary><AnalysisFields value={match.custom_analysis} query={query} /></details>}
+    {match?.match_sources?.includes('Transcript') && <details className="lw-details"><summary>Transcript in this shot<Icon name="down" size={13} /></summary><AnalysisFields value={match.transcript_segments} query={query} /></details>}
     <div className="vw-shot-actions"><button className="lw-text-button" onClick={onExport}>Export shot</button><button className="lw-text-button" onClick={copyTimes}>Copy times</button></div>{copyMessage && <small className="vw-copy-message" role="status">{copyMessage}</small>}
-    {!!shot.dominant_colors?.length && <details className="lw-details"><summary>Colors<Icon name="down" size={13} /></summary><p>{shot.dominant_colors.join(' · ')}</p></details>}
-    {!!shot.tags?.length && <details className="lw-details"><summary>AI tags<Icon name="down" size={13} /></summary><div className="lw-tags">{shot.tags.map(tag => <span key={tag}>{tag}</span>)}</div></details>}
-    {(shot.evidence?.length || shot.visible_text?.length || shot.logos?.length || shot.subjects?.length || shot.actions?.length || shot.location || shot.transcript || shot.audio_notes) ? <details className="lw-details lw-shot-evidence"><summary>Details<Icon name="down" size={13} /></summary><dl>{shot.subjects?.length > 0 && <div><dt>Subjects</dt><dd>{shot.subjects.join(', ')}</dd></div>}{!!shot.actions?.length && <div><dt>Actions</dt><dd>{shot.actions.join(', ')}</dd></div>}{!!shot.visible_text?.length && <div><dt>Visible text</dt><dd>{shot.visible_text.join(' · ')}</dd></div>}{!!shot.logos?.length && <div><dt>Potential logos</dt><dd>{shot.logos.join(', ')}</dd></div>}{shot.location && <div><dt>Location description</dt><dd>{shot.location}</dd></div>}{shot.transcript && <div><dt>Model transcript</dt><dd>{shot.transcript}</dd></div>}{shot.audio_notes && <div><dt>Audio observations</dt><dd>{shot.audio_notes}</dd></div>}{shot.evidence?.map((evidence, index) => <div key={index}><dt>{evidence.modality} · {evidence.start_time}–{evidence.end_time}</dt><dd>{evidence.description}</dd></div>)}</dl><p className="lw-model-note">Model observations are unverified. Shot timestamps are approximate.{shot.confidence != null ? ' Model confidence is uncalibrated and is not a reliability score.' : ''}</p></details> : null}
-    {!!shot.analysis_warnings?.length && <details className="lw-details"><summary>Notes<Icon name="down" size={13} /></summary><div className="lw-analysis-warning">{shot.analysis_warnings.map(warning => <p key={warning}>{warning}</p>)}</div></details>}
+    {!!shot.dominant_colors?.length && <details className="lw-details"><summary>Colors<Icon name="down" size={13} /></summary><p><SearchHighlight text={shot.dominant_colors.join(' · ')} query={query} /></p></details>}
+    {!!shot.tags?.length && <details className="lw-details"><summary>AI tags<Icon name="down" size={13} /></summary><div className="lw-tags">{shot.tags.map(tag => <span key={tag}><SearchHighlight text={tag} query={query} /></span>)}</div></details>}
+    {(shot.evidence?.length || shot.visible_text?.length || shot.logos?.length || shot.subjects?.length || shot.actions?.length || shot.location || shot.transcript || shot.audio_notes) ? <details className="lw-details lw-shot-evidence"><summary>Details<Icon name="down" size={13} /></summary><dl>{shot.subjects?.length > 0 && <div><dt>Subjects</dt><dd><SearchHighlight text={shot.subjects.join(', ')} query={query} /></dd></div>}{!!shot.actions?.length && <div><dt>Actions</dt><dd><SearchHighlight text={shot.actions.join(', ')} query={query} /></dd></div>}{!!shot.visible_text?.length && <div><dt>Visible text</dt><dd><SearchHighlight text={shot.visible_text.join(' · ')} query={query} /></dd></div>}{!!shot.logos?.length && <div><dt>Potential logos</dt><dd><SearchHighlight text={shot.logos.join(', ')} query={query} /></dd></div>}{shot.location && <div><dt>Location description</dt><dd><SearchHighlight text={shot.location} query={query} /></dd></div>}{shot.transcript && <div><dt>Model transcript</dt><dd><SearchHighlight text={shot.transcript} query={query} /></dd></div>}{shot.audio_notes && <div><dt>Audio observations</dt><dd><SearchHighlight text={shot.audio_notes} query={query} /></dd></div>}{shot.evidence?.map((evidence, index) => <div key={index}><dt>{evidence.modality} · {evidence.start_time}–{evidence.end_time}</dt><dd><SearchHighlight text={evidence.description} query={query} /></dd></div>)}</dl><p className="lw-model-note">Model observations are unverified. Shot timestamps are approximate.{shot.confidence != null ? ' Model confidence is uncalibrated and is not a reliability score.' : ''}</p></details> : null}
+    {!!shot.analysis_warnings?.length && <details className="lw-details"><summary>Notes<Icon name="down" size={13} /></summary><div className="lw-analysis-warning">{shot.analysis_warnings.map(warning => <p key={warning}><SearchHighlight text={warning} query={query} /></p>)}</div></details>}
     <button className="lw-text-button" onClick={() => setExpanded(!expanded)} aria-expanded={expanded}>{expanded ? 'Close edit' : 'Edit'}<Icon name="down" size={13} /></button>
     {expanded && <div className="lw-shot-fields"><label className="lw-field">Your tags<input value={tags} onChange={event => setTags(event.target.value)} placeholder="Comma-separated tags" /></label><label className="lw-field">Notes<textarea rows={2} value={notes} onChange={event => setNotes(event.target.value)} /></label><label className="lw-field">Review<select value={review} onChange={event => setReview(event.target.value as ReviewStatus)}><option value="unreviewed">Unreviewed</option><option value="reviewed">Reviewed</option><option value="needs_changes">Needs changes</option></select></label><button className="lw-button" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save shot'}</button>{message && <small className="lw-inline-success" role="status">{message}</small>}{error && <small className="lw-inline-error" role="alert">{error}</small>}</div>}
   </div>

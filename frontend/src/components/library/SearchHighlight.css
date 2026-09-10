@@ -1,0 +1,8 @@
+.lw-search-highlight {
+  background: #daeF9e;
+  color: #182016;
+  border-radius: 2px;
+  padding: 0 1px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
