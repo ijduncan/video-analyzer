@@ -14,6 +14,8 @@
 
 
 /* Keep the library focused on footage and the controls needed to find it. */
+.lw-primary-action{padding:16px 20px 6px;flex-shrink:0}
+.lw-analyze-primary{width:100%;min-height:48px;font-size:14px!important;gap:10px}
 .lw-library-content,.has-inspector .lw-library-content{max-width:none;padding:24px}
 .lw-sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
 .lw-toolbar{display:flex;align-items:center;gap:20px;margin-bottom:24px}
