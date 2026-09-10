@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     gemini_deep_model: str = "gemini-3.8-flash"
     database_path: str = str(Path(__file__).parent.parent / "data" / "library.sqlite3")
     max_concurrent_analyses: int = 2
-    shape_index_concurrency: int = Field(default=3, ge=1, le=6)
+    shape_index_concurrency: int = Field(default=20, ge=1, le=20)
     upload_dir: str = str(Path(__file__).parent.parent / "uploads")
     max_file_size_mb: int = 2000
     allowed_origins: list[str] = ["http://localhost:5173"]

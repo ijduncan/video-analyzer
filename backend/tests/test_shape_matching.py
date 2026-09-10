@@ -204,7 +204,7 @@ def test_parallel_batches_publish_once_and_resume_without_rebilling(client, visu
         monkeypatch.setattr(shape_index.settings, 'shape_index_concurrency', 3)
         started, release = asyncio.Event(), asyncio.Event()
 
-        async def generate(asset, revision, entries, api_key):
+        async def generate(asset, revision, entries, api_key, **kwargs):
             nonlocal active, peak
             calls.extend(entries)
             active += 1
@@ -240,7 +240,7 @@ def test_interactive_request_joins_overlapping_background_frame(client, visual_a
     async def verify():
         started, release = asyncio.Event(), asyncio.Event()
 
-        async def generate(asset, revision, entries, api_key):
+        async def generate(asset, revision, entries, api_key, **kwargs):
             calls.append(entries)
             started.set()
             await release.wait()
@@ -270,7 +270,7 @@ def test_pause_cancels_all_parallel_workers(client, visual_asset, monkeypatch):
         monkeypatch.setattr(shape_index.settings, 'shape_index_concurrency', 3)
         started = asyncio.Event()
 
-        async def generate(*args):
+        async def generate(*args, **kwargs):
             nonlocal active
             active += 1
             if active == 3:

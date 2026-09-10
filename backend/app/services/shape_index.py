@@ -17,12 +17,13 @@ from app.services.analysis_support import extract_usage, response_text
 from app.services.gemini_client import get_client
 from app.services.job_store import get_job
 from app.services.shape_geometry import Form, describe
+from app.services.adaptive_concurrency import AdaptiveConcurrency
 
 PROMPT_VERSION = 1
 _tasks = {}
 _errors = {}
 _gate = asyncio.Semaphore(settings.shape_index_concurrency + 1)
-_background_gate = asyncio.Semaphore(settings.shape_index_concurrency)
+_background_gate = AdaptiveConcurrency(settings.shape_index_concurrency)
 _locks = {}
 _priorities = {}
 logger = logging.getLogger(__name__)
@@ -87,10 +88,11 @@ def status(job, key):
     running = job.job_id in _tasks and not _tasks[job.job_id].done()
     return {'version': version(), 'indexed': len(eligible & saved), 'failed': len(eligible & failed), 'total': len(eligible), 'running': running,
             'error': _errors.get(job.job_id), 'model': settings.gemini_analysis_model, 'requests': len(usage),
-            'input_tokens': sum(u['input_tokens'] for u in usage), 'output_tokens': sum(u['output_tokens'] for u in usage)}
+            'input_tokens': sum(u['input_tokens'] for u in usage), 'output_tokens': sum(u['output_tokens'] for u in usage),
+            'concurrency': _background_gate.status() if isinstance(_background_gate, AdaptiveConcurrency) else None}
 
 
-async def generate(job, key, entries, api_key=None):
+async def generate(job, key, entries, api_key=None, background=False):
     contents = [PROMPT]
     for seconds in entries:
         path = await visual_index.frame(job, key, seconds)
@@ -110,6 +112,10 @@ async def generate(job, key, entries, api_key=None):
             except Exception as exc:
                 # Retry explicit throttling/unavailability only, not ambiguous timeouts.
                 code = getattr(exc, 'code', None)
+                if background and (code in (429, 503) or isinstance(exc, TimeoutError)):
+                    _background_gate.throttle()
+                    # Release the worker's permit before retrying at the reduced limit.
+                    raise
                 if code not in (429, 503) or attempt == 2:
                     raise
                 logger.warning('shape_batch_retry job=%s code=%s attempt=%s', job.job_id, code, attempt + 1)
@@ -158,7 +164,7 @@ async def generate(job, key, entries, api_key=None):
         db.close()
 
 
-async def ensure_batch(job, key, entries, api_key=None):
+async def ensure_batch(job, key, entries, api_key=None, background=False):
     # Lock only overlapping frames, allowing independent batches to run together.
     # Sorted acquisition also prevents deadlock when interactive and background work overlap.
     entries = sorted(set(entries))
@@ -169,7 +175,11 @@ async def ensure_batch(job, key, entries, api_key=None):
         saved = cached(job, key)
         missing = [s for s in entries if round(s * 1000) not in saved or saved[round(s * 1000)].get('needs_retry')]
         if missing:
-            await generate(job, key, missing, api_key)
+            if background:
+                await generate(job, key, missing, api_key, background=True)
+            else:
+                await generate(job, key, missing, api_key)
+        return len(missing)
 
 
 async def ensure(job, key, seconds, api_key=None):
@@ -214,17 +224,30 @@ async def build(job, key, api_key):
 
         async def worker():
             while pending:
-                async with _background_gate:
-                    # No await between selection and removal: workers claim distinct batches.
-                    priority = _priorities.get(job.job_id, [])
-                    batch = [s for s in dict.fromkeys([*priority, *ordered]) if s in pending][:3]
-                    pending.difference_update(batch)
-                    if not batch:
-                        return
-                    current = get_job(job.job_id)
-                    if not current or visual_index.source_info(current)[0] != key:
-                        raise ValueError('The source changed. Reopen Match cuts.')
-                    await ensure_batch(job, key, batch, api_key)
+                batch = None
+                for attempt in range(3):
+                    try:
+                        async with _background_gate:
+                            if batch is None:
+                                # Claim only after admission so searches can reprioritize waiting work.
+                                priority = _priorities.get(job.job_id, [])
+                                batch = [s for s in dict.fromkeys([*priority, *ordered]) if s in pending][:3]
+                                pending.difference_update(batch)
+                            if not batch:
+                                return
+                            current = get_job(job.job_id)
+                            if not current or visual_index.source_info(current)[0] != key:
+                                raise ValueError('The source changed. Reopen Match cuts.')
+                            started = time.monotonic()
+                            count = await ensure_batch(job, key, batch, api_key, background=True)
+                            if isinstance(_background_gate, AdaptiveConcurrency):
+                                _background_gate.success(count, time.monotonic() - started)
+                            break
+                    except Exception as exc:
+                        if getattr(exc, 'code', None) not in (429, 503) or attempt == 2:
+                            raise
+                        logger.warning('shape_batch_retry job=%s code=%s attempt=%s',
+                                       job.job_id, getattr(exc, 'code', None), attempt + 1)
 
         workers = [asyncio.create_task(worker()) for _ in range(settings.shape_index_concurrency)]
         try:
@@ -275,4 +298,4 @@ async def shutdown():
     _locks.clear()
     _errors.clear()
     _gate = asyncio.Semaphore(settings.shape_index_concurrency + 1)
-    _background_gate = asyncio.Semaphore(settings.shape_index_concurrency)
+    _background_gate = AdaptiveConcurrency(settings.shape_index_concurrency)
