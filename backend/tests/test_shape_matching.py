@@ -180,3 +180,137 @@ def test_bad_outline_does_not_discard_valid_shapes_and_all_bad_frames_can_retry(
         assert not b['needs_retry']
     asyncio.run(verify())
     assert shape_index.status(visual_asset, key)['requests'] == 3
+
+
+def save_empty_profiles(asset, key, entries):
+    db = shape_index.db_for(asset, key)
+    try:
+        db.executemany('INSERT OR REPLACE INTO shape VALUES (?,?,?)', [
+            (shape_index.version(), round(s * 1000), json.dumps({'forms': []})) for s in entries])
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_parallel_batches_publish_once_and_resume_without_rebilling(client, visual_asset, monkeypatch):
+    client.post(f'/api/visual/{visual_asset.job_id}/index')
+    state = wait_index(client, visual_asset.job_id)
+    key = state['revision']
+    calls, active, peak = [], 0, 0
+
+    async def verify():
+        nonlocal active, peak
+        monkeypatch.setattr(shape_index, '_background_gate', asyncio.Semaphore(3))
+        monkeypatch.setattr(shape_index.settings, 'shape_index_concurrency', 3)
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def generate(asset, revision, entries, api_key):
+            nonlocal active, peak
+            calls.extend(entries)
+            active += 1
+            peak = max(peak, active)
+            if active == 3:
+                started.set()
+            try:
+                await release.wait()
+                save_empty_profiles(asset, revision, entries)
+            finally:
+                active -= 1
+
+        monkeypatch.setattr(shape_index, 'generate', generate)
+        task = asyncio.create_task(shape_index.build(visual_asset, key, None))
+        try:
+            await asyncio.wait_for(started.wait(), 2)
+        finally:
+            release.set()
+            await task
+        assert peak == 3 and active == 0
+        assert len(calls) == len(set(calls)) == state['shape']['total']
+        assert shape_index.status(visual_asset, key)['indexed'] == state['shape']['total']
+        await shape_index.build(visual_asset, key, None)
+        assert len(calls) == state['shape']['total']
+
+    asyncio.run(verify())
+
+
+def test_interactive_request_joins_overlapping_background_frame(client, visual_asset, monkeypatch):
+    key, _ = visual_index.source_info(visual_asset)
+    calls = []
+
+    async def verify():
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def generate(asset, revision, entries, api_key):
+            calls.append(entries)
+            started.set()
+            await release.wait()
+            save_empty_profiles(asset, revision, entries)
+
+        monkeypatch.setattr(shape_index, 'generate', generate)
+        background = asyncio.create_task(shape_index.ensure_batch(visual_asset, key, [1.5, 1.6]))
+        await started.wait()
+        interactive = asyncio.create_task(shape_index.ensure(visual_asset, key, 1.5))
+        await asyncio.sleep(0)
+        assert not interactive.done()
+        release.set()
+        await asyncio.gather(background, interactive)
+        assert calls == [[1.5, 1.6]]
+
+    asyncio.run(verify())
+
+
+def test_pause_cancels_all_parallel_workers(client, visual_asset, monkeypatch):
+    client.post(f'/api/visual/{visual_asset.job_id}/index')
+    key = wait_index(client, visual_asset.job_id)['revision']
+    active = 0
+
+    async def verify():
+        nonlocal active
+        monkeypatch.setattr(shape_index, '_background_gate', asyncio.Semaphore(3))
+        monkeypatch.setattr(shape_index.settings, 'shape_index_concurrency', 3)
+        started = asyncio.Event()
+
+        async def generate(*args):
+            nonlocal active
+            active += 1
+            if active == 3:
+                started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                active -= 1
+
+        monkeypatch.setattr(shape_index, 'generate', generate)
+        task = asyncio.create_task(shape_index.build(visual_asset, key, None))
+        shape_index._tasks[visual_asset.job_id] = task
+        try:
+            await asyncio.wait_for(started.wait(), 2)
+        finally:
+            await shape_index.stop(visual_asset.job_id)
+        assert task.cancelled() and active == 0
+
+    asyncio.run(verify())
+
+
+def test_throttling_backs_off_and_records_successful_usage(client, visual_asset, monkeypatch):
+    key, _ = visual_index.source_info(visual_asset)
+    attempts, delays = [], []
+
+    class Throttled(Exception):
+        code = 429
+
+    async def generate_content(**kwargs):
+        attempts.append(kwargs)
+        if len(attempts) == 1:
+            raise Throttled()
+        return SimpleNamespace(text='{"frames":[{"frame_id":"1500","forms":[]}]}', candidates=[], usage_metadata=None)
+
+    async def backoff(delay):
+        delays.append(delay)
+
+    asyncio.run(visual_index.frame(visual_asset, key, 1.5))
+    monkeypatch.setattr(shape_index, 'get_client', lambda _: SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))))
+    monkeypatch.setattr(shape_index.asyncio, 'sleep', backoff)
+    asyncio.run(shape_index.ensure(visual_asset, key, 1.5, 'fixture'))
+    assert len(attempts) == 2 and delays == [2]
+    assert shape_index.status(visual_asset, key)['requests'] == 1
