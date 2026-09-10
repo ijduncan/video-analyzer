@@ -1,5 +1,7 @@
 # Video intelligence for agencies and filmmakers
 
+For feature-film costs and shape, composition, and motion matching, see the focused [visual match-cut brief](visual-match-cuts.md).
+
 The most useful rebuild is a footage intelligence workspace: make a large body of material easier to discover, judge, correct, and hand off. Recognition quality matters, but its value depends on whether an editor can inspect the exact supporting moment and move reviewed metadata into the next tool without losing context.
 
 ## Recommendation
