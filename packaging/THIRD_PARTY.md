@@ -36,3 +36,7 @@ The Resolve integration's `WorkflowIntegration.node` is **not redistributed**.
 Its installation helper copies the matching bridge from the user's own installed
 Blackmagic Developer SDK. Resolve supplies the plugin's Electron runtime. Use the
 installed Resolve SDK documentation and license for that vendor component.
+
+## OpenTimelineIO
+
+The app includes OpenTimelineIO 0.18.x, licensed under Apache-2.0, for writing and validating Resolve-compatible OTIO timelines. Its license and package metadata are included in the bundled `opentimelineio` distribution metadata. Project: https://github.com/AcademySoftwareFoundation/OpenTimelineIO

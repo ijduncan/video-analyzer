@@ -78,10 +78,11 @@ class SourceStatusRequest(BaseModel):
 class MediaExportSelection(BaseModel):
     model_config = ConfigDict(extra='forbid')
     job_ids: list[str] = Field(min_length=1, max_length=1000)
+    format: Literal['premiere_xml', 'fcpxml', 'otio', 'edl'] = 'premiere_xml'
+    layout: Literal['timeline', 'bin'] = 'timeline'
 
 
 class MediaExportRequest(MediaExportSelection):
     title: str = Field(default='Video Analyzer selects', min_length=1, max_length=200)
-    layout: Literal['timeline', 'bin'] = 'timeline'
     include_metadata: bool = True
     analysis_versions: dict[str, str] = Field(max_length=1000)

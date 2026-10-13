@@ -8,6 +8,8 @@ from dataclasses import asdict
 
 from app.services.job_store import create_job, update_job
 from app.services.media_export import combined_project
+from app.services.media_export import combined_fcpxml, combined_otio, combined_edl, export_checks, original_media_url
+import pytest
 
 
 def prepare(asset, tmp_path):
@@ -119,3 +121,93 @@ def test_invalid_member_prevents_partial_xml_and_options_report_reason(client, a
     response = client.post('/api/library/media-export', json={'job_ids': ids,
         'analysis_versions': {id: 'saved-run' for id in ids}})
     assert response.status_code == 422
+
+
+def test_anamorphic_arri_and_braw_have_independent_available_formats(asset, tmp_path):
+    job = prepare(asset, tmp_path)
+    arri = second(job, tmp_path, audio=False)
+    arri.technical.update(sample_aspect_ratio='2:1', frame_rate=25, frame_rate_fraction='25/1')
+    arri.filename = 'ARRI RAW.mxf'
+    arri.local_path = str(tmp_path / arri.filename)
+    braw = copy.deepcopy(job)
+    braw.filename = 'visitor.braw'
+    braw.local_path = str(tmp_path / braw.filename)
+    jobs = [arri, braw]
+    assert not export_checks(jobs)['available']  # Premiere mapping remains strict.
+    for format in ('fcpxml', 'otio', 'edl'):
+        assert export_checks(jobs, format)['available']
+    root = ET.fromstring(combined_fcpxml(jobs, 'Booth'))
+    assert root.find('resources/format').get('paspH') == '2'
+    assert root.find('resources/format').get('paspV') == '1'
+    assert len(root.findall('resources/asset')) == 2
+    assert len(root.findall('.//spine/asset-clip')) == 2
+    assert len(root.findall('library/event/asset-clip')) == 2
+    assert root.findall('.//spine/asset-clip')[0].get('start') == '90000/25s'
+    assert root.findall('.//spine/asset-clip')[1].get('offset') == '300/25s'
+    assert 'ARRI%20RAW.mxf' in root.find('resources/asset/media-rep').get('src')
+    assert root.find('.//spine/asset-clip/marker').get('start') == '90000/25s'
+    assert 'Hello booth!' in ET.tostring(root, encoding='unicode')
+
+
+def test_otio_roundtrip_full_sources_audio_gaps_markers_and_geometry(asset, tmp_path):
+    import opentimelineio as otio
+    job = prepare(asset, tmp_path)
+    silent = second(job, tmp_path, audio=False)
+    silent.technical.update(sample_aspect_ratio='2:1', rotation=90, width=None)
+    content = combined_otio([silent, job], 'Booth')
+    timeline = otio.adapters.read_from_string(content, adapter_name='otio_json')
+    video, audio = timeline.tracks
+    assert len(video) == len(audio) == 2
+    assert isinstance(audio[0], otio.schema.Gap)
+    assert isinstance(audio[1], otio.schema.Clip)
+    assert abs(video[0].duration().to_seconds() - 12) < 1e-9
+    assert abs(video[1].duration().to_seconds() - 8) < 1e-9
+    assert abs(timeline.duration().to_seconds() - 20) < 1e-9
+    assert video[0].metadata['video_analyzer']['technical']['sample_aspect_ratio'] == '2:1'
+    assert video[0].metadata['video_analyzer']['technical']['rotation'] == 90
+    assert len(video[1].markers) == 3
+    assert video[1].markers[0].marked_range.start_time.value == 90000
+    assert video[1].markers[-1].metadata['note'] == 'Hello booth!'
+    assert 'private-provider' not in content
+    assert 'original%20A.mov' in video[1].media_reference.target_url
+
+
+def test_edl_unique_reels_full_sources_zero_origin_and_global_limits(asset, tmp_path):
+    job = prepare(asset, tmp_path)
+    other = second(job, tmp_path)
+    other.technical.update(frame_rate=25, frame_rate_fraction='25/1', source_timecode=None)
+    text = combined_edl([job, other], 'Booth')
+    assert '001  VA000001' in text and '002  VA000002' in text
+    assert '01:00:00:00 01:00:08:00 00:00:00:00 00:00:08:00' in text
+    assert '00:00:00:00 00:00:12:00 00:00:08:00 00:00:20:00' in text
+    assert 'source_relative_file_zero' in text and 'VIDEO ONLY' in text
+    other.technical['frame_rate_fraction'] = '30/1'
+    assert not export_checks([job, other], 'edl')['available']
+    with pytest.raises(ValueError, match='one source frame rate'):
+        combined_edl([job, other], 'Mixed')
+    assert '999' in export_checks([job] * 1000, 'edl')['reason']
+
+
+@pytest.mark.parametrize('format,extension,tag', [('fcpxml', 'fcpxml', 'fcpxml'), ('otio', 'otio', None), ('edl', 'edl', None)])
+def test_all_download_routes_and_package_extensions(client, asset, tmp_path, format, extension, tag):
+    job = prepare(asset, tmp_path)
+    update_job(job.job_id, technical={**job.technical, 'sample_aspect_ratio': '2:1'})
+    body = {'job_ids': [job.job_id], 'format': format}
+    opts = client.post('/api/library/media-export-options', json=body)
+    assert opts.status_code == 200 and opts.json()['available'] and opts.json()['format'] == format
+    request = {**body, 'analysis_versions': {job.job_id: 'saved-run'}, 'include_metadata': False}
+    result = client.post('/api/library/media-export', json=request)
+    assert result.status_code == 200 and f'.{extension}' in result.headers['content-disposition']
+    if tag:
+        assert ET.fromstring(result.content).tag == tag
+    elif format == 'otio':
+        assert result.json()['OTIO_SCHEMA'] == 'Timeline.1'
+    request['include_metadata'] = True
+    with zipfile.ZipFile(io.BytesIO(client.post('/api/library/media-export', json=request).content)) as archive:
+        assert f'Video Analyzer.{extension}' in archive.namelist()
+        assert json.loads(archive.read('manifest.json'))['format'] == format
+
+
+def test_native_paths_are_encoded_without_losing_unc_authority():
+    assert original_media_url(r'\\NAS\booth footage\visitor.braw') == 'file://NAS/booth%20footage/visitor.braw'
+    assert original_media_url(r'C:\booth footage\visitor.braw') == 'file:///C:/booth%20footage/visitor.braw'

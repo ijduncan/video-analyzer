@@ -36,7 +36,7 @@ async def export_media_jobs(ids):
 async def media_export_options(body: MediaExportSelection):
     from app.services.media_export import export_checks
     jobs = await export_media_jobs(body.job_ids)
-    return await asyncio.to_thread(export_checks, jobs)
+    return await asyncio.to_thread(export_checks, jobs, body.format, body.layout)
 
 
 @router.post('/media-export')
@@ -47,11 +47,13 @@ async def export_selected_media(body: MediaExportRequest):
     if body.analysis_versions != versions:
         raise HTTPException(409, 'Selected analysis changed. Check the selection again before exporting.')
     try:
-        path = await asyncio.to_thread(build_download, jobs, body.title.strip() or 'Video Analyzer selects', body.layout, body.include_metadata)
+        path = await asyncio.to_thread(build_download, jobs, body.title.strip() or 'Video Analyzer selects', body.layout, body.include_metadata, body.format)
     except ValueError as exc:
         raise HTTPException(422, str(exc))
-    return FileResponse(path, media_type='application/zip' if body.include_metadata else 'application/xml',
-        filename='Video Analyzer media export.' + ('zip' if body.include_metadata else 'xml'),
+    extension, mime = {'premiere_xml': ('xml', 'application/xml'), 'fcpxml': ('fcpxml', 'application/xml'),
+                       'otio': ('otio', 'application/json'), 'edl': ('edl', 'text/plain')}[body.format]
+    return FileResponse(path, media_type='application/zip' if body.include_metadata else mime,
+        filename='Video Analyzer media export.' + ('zip' if body.include_metadata else extension),
         background=BackgroundTask(path.unlink, missing_ok=True))
 
 

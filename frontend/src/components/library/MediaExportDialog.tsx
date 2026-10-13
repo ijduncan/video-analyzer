@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { downloadMediaExport, getMediaExportOptions } from '../../api/library'
-import type { MediaExportOptions } from '../../api/library'
+import type { MediaExportFormat, MediaExportOptions } from '../../api/library'
 import { errorMessage } from './format'
 import { Icon } from './Icon'
 import './MediaExportDialog.css'
@@ -19,9 +19,12 @@ export function MediaExportDialog({ media, onClose }: {
   const [busy, setBusy] = useState(false)
   const [title, setTitle] = useState('Video Analyzer selects')
   const [layout, setLayout] = useState<'timeline' | 'bin'>('timeline')
+  const [format, setFormat] = useState<MediaExportFormat>('fcpxml')
   const [includeMetadata, setIncludeMetadata] = useState(true)
   const idsKey = JSON.stringify(media.map(item => item.id))
   const details = new Map(options?.items.map(item => [item.id, item]))
+  const extension = format === 'premiere_xml' ? 'xml' : format
+  const libraryOnly = format === 'premiere_xml' || format === 'fcpxml'
 
   useEffect(() => {
     const element = dialog.current!
@@ -30,20 +33,20 @@ export function MediaExportDialog({ media, onClose }: {
   }, [])
   useEffect(() => {
     const controller = new AbortController()
-    getMediaExportOptions(JSON.parse(idsKey), controller.signal).then(result => {
+    getMediaExportOptions(JSON.parse(idsKey), controller.signal, format, layout).then(result => {
       if (!controller.signal.aborted) setOptions(result)
     }).catch(cause => { if (!controller.signal.aborted) setError(errorMessage(cause)) })
     return () => controller.abort()
-  }, [idsKey, retry])
+  }, [idsKey, retry, format, layout])
 
   async function download() {
-    if (lock.current || !options?.available) return
+    if (lock.current || !options?.available || options.format !== format) return
     lock.current = true; setBusy(true); setError(''); setNotice('')
     const controller = new AbortController()
     downloadController.current = controller
     try {
       const response = await downloadMediaExport(JSON.parse(idsKey), title.trim(), layout, includeMetadata,
-        Object.fromEntries(options.items.map(item => [item.id, item.analysis_version])), controller.signal)
+        Object.fromEntries(options.items.map(item => [item.id, item.analysis_version])), controller.signal, format)
       if (!response.ok) {
         const body = await response.json().catch(() => null)
         if (response.status === 409) setOptions(null)
@@ -53,7 +56,7 @@ export function MediaExportDialog({ media, onClose }: {
       if (controller.signal.aborted) return
       const url = URL.createObjectURL(blob)
       const anchor = document.createElement('a')
-      anchor.href = url; anchor.download = `Video Analyzer media export.${includeMetadata ? 'zip' : 'xml'}`
+      anchor.href = url; anchor.download = `Video Analyzer media export.${includeMetadata ? 'zip' : extension}`
       document.body.appendChild(anchor); anchor.click(); anchor.remove()
       window.setTimeout(() => URL.revokeObjectURL(url), 1000)
       setNotice(`Export download started for ${media.length} media ${media.length === 1 ? 'item' : 'items'}.`)
@@ -66,19 +69,20 @@ export function MediaExportDialog({ media, onClose }: {
     <p>Import all selected original recordings into Premiere or Resolve. Your saved analysis becomes descriptions, logging notes and markers.</p>
     <fieldset disabled={busy}>
       <label className="me-field">Project / timeline name<input value={title} maxLength={200} onChange={event => setTitle(event.target.value)} /></label>
-      <label className="me-field">Create<select value={layout} onChange={event => setLayout(event.target.value as 'timeline' | 'bin')}><option value="timeline">Timeline and media bin · Premiere / Resolve</option><option value="bin">Media bin only · Premiere</option></select></label>
-      <p className="me-hint">Whole media, in selection order. Analysis clips are markers; they don’t split your recordings. The timeline uses the first selected source’s frame rate and dimensions.</p>
-      <label className="me-checkbox"><input type="checkbox" checked={includeMetadata} onChange={event => setIncludeMetadata(event.target.checked)} /><span>Include complete metadata package<small>One ZIP with editor XML, full analysis JSON, combined CSV, XMP sidecars and available SRT transcripts.</small></span></label>
+      <label className="me-field">Export format<select value={format} onChange={event => { setFormat(event.target.value as MediaExportFormat); setOptions(null); setError(''); setNotice(''); setLayout('timeline') }}><option value="fcpxml">Final Cut Pro XML · Resolve / Final Cut Pro</option><option value="otio">Resolve OTIO · OpenTimelineIO</option><option value="premiere_xml">Premiere XML · Premiere / Resolve</option><option value="edl">CMX3600 EDL · video only</option></select></label>
+      <label className="me-field">Create<select value={layout} onChange={event => { setLayout(event.target.value as 'timeline' | 'bin'); setOptions(null); setError(''); setNotice('') }}><option value="timeline">Whole-media timeline{format === 'premiere_xml' || format === 'fcpxml' ? ' and media library' : ''}</option>{libraryOnly && <option value="bin">Media library only · {format === 'premiere_xml' ? 'Premiere' : 'Final Cut Pro'}</option>}</select></label>
+      <p className="me-hint">Whole recordings, in selection order. {format === 'edl' ? 'EDL carries video cuts and comments; audio, transcripts and full metadata stay in the package. All sources must share one frame rate; maximum 999 items.' : 'Analysis clips are markers; they don’t split your recordings.'} {format === 'fcpxml' ? 'Recorded pixel aspect ratios are preserved, including 2× anamorphic.' : format === 'otio' ? 'Resolve reads pixel aspect and orientation from the originals. OTIO is an open timeline format, not a native DRT/DRP project.' : format === 'premiere_xml' ? 'The timeline uses the first selected source’s frame rate and dimensions.' : ''}</p>
+      <label className="me-checkbox"><input type="checkbox" checked={includeMetadata} onChange={event => setIncludeMetadata(event.target.checked)} /><span>Include complete metadata package<small>One ZIP with the selected editor file, full analysis JSON, combined CSV, XMP sidecars and available SRT transcripts.</small></span></label>
     </fieldset>
-    <p className="me-hint">Originals stay in place; relink in the editor if they’ve moved or are offline. XML imports expose supported logging fields. Use the editor integration to sync other native metadata fields; the package retains the complete data.</p>
+    <p className="me-hint">Originals stay in place; relink in the editor if they’ve moved or are offline. Each format has its own metadata support. Use the editor integration to sync other native metadata fields; the package retains the complete data.</p>
     {!options && !error && <p role="status">Checking selected media…</p>}
     <ul className="me-media-list">{media.map(item => {
       const detail = details.get(item.id)
       return <li key={item.id}><strong>{item.title}</strong>{detail && <>{!detail.available && <span className="me-error">{detail.reason}</span>}{!detail.analyzed && <small>No saved clip analysis; original media metadata will be included.</small>}{detail.partial && <small>Includes currently saved results; analysis may be incomplete.</small>}</>}</li>
     })}</ul>
-    {options && !options.available && <p className="me-error" role="alert">Some media cannot be included in this XML. Resolve the issues above or change your selection. No media will be silently skipped.</p>}
+    {options && !options.available && <p className="me-error" role="alert">{options.reason || 'Some media cannot be included in this format. Try another format or resolve the issues above. No media will be silently skipped.'}</p>}
     {error && <p className="me-error" role="alert">{error}</p>}
     {notice && <p role="status">{notice}</p>}
-    <footer className="lw-dialog-actions"><button className="lw-button" disabled={busy} onClick={() => { setError(''); setOptions(null); setRetry(value => value + 1) }}>Check again</button><button className="lw-button" disabled={busy} onClick={onClose}>Close</button><button className="lw-button lw-button-primary" disabled={busy || !options?.available || !title.trim()} onClick={() => void download()}><Icon name="download" size={16} />{busy ? 'Preparing export…' : includeMetadata ? 'Download editor package' : 'Download editor XML'}</button></footer>
+    <footer className="lw-dialog-actions"><button className="lw-button" disabled={busy} onClick={() => { setError(''); setOptions(null); setRetry(value => value + 1) }}>Check again</button><button className="lw-button" disabled={busy} onClick={onClose}>Close</button><button className="lw-button lw-button-primary" disabled={busy || !options?.available || options.format !== format || !title.trim()} onClick={() => void download()}><Icon name="download" size={16} />{busy ? 'Preparing export…' : includeMetadata ? 'Download editor package' : `Download ${format === 'premiere_xml' ? 'XML' : format.toUpperCase()}`}</button></footer>
   </dialog>
 }

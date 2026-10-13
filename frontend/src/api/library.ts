@@ -332,18 +332,21 @@ export function deleteAsset(id: string) {
   })
 }
 export type ExportFormat = 'json' | 'csv' | 'xmp' | 'srt' | 'edl' | 'fcpxml' | 'premiere_xml'
+export type MediaExportFormat = 'premiere_xml' | 'fcpxml' | 'otio' | 'edl'
 export interface MediaExportOptions {
   available: boolean
+  format: MediaExportFormat
+  reason?: string | null
   items: { id: string; title: string; filename: string; available: boolean; reason: string | null; analysis_version: string; analyzed: boolean; partial: boolean }[]
 }
-export function getMediaExportOptions(ids: string[], signal?: AbortSignal) {
+export function getMediaExportOptions(ids: string[], signal?: AbortSignal, format: MediaExportFormat = 'premiere_xml', layout: 'timeline' | 'bin' = 'timeline') {
   return request<MediaExportOptions>('/api/library/media-export-options', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ job_ids: ids }), signal,
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ job_ids: ids, format, layout }), signal,
   })
 }
-export function downloadMediaExport(ids: string[], title: string, layout: 'timeline' | 'bin', includeMetadata: boolean, versions: Record<string, string>, signal?: AbortSignal) {
+export function downloadMediaExport(ids: string[], title: string, layout: 'timeline' | 'bin', includeMetadata: boolean, versions: Record<string, string>, signal?: AbortSignal, format: MediaExportFormat = 'premiere_xml') {
   return fetch('/api/library/media-export', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ job_ids: ids, title, layout, include_metadata: includeMetadata, analysis_versions: versions }), signal })
+    body: JSON.stringify({ job_ids: ids, title, layout, format, include_metadata: includeMetadata, analysis_versions: versions }), signal })
 }
 export interface ExportOptions {
   scope: 'selected_shots' | 'asset'

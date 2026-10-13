@@ -7,11 +7,13 @@ import re
 import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
+from fractions import Fraction
 from pathlib import Path
+from urllib.parse import quote
 
 from app.services.library_export import export_library, iter_shots, job_data, portable_document, segment_times, source_filename
 from app.services.editor_metadata import editor_metadata
-from app.services.nle_export import _fcpxml_timing, _frames
+from app.services.nle_export import _fcpxml_timing, _frames, _frame_timecode, _one_line
 from app.services.premiere_xml import export_premiere_xml, source_url
 
 
@@ -36,12 +38,12 @@ def source_project(job):
     return ET.fromstring(export_premiere_xml(full_media(job)))
 
 
-def export_checks(jobs):
+def export_checks(jobs, format='premiere_xml', layout='timeline'):
     items = []
     for job in jobs:
         reason = None
         try:
-            source_project(job)
+            render_editor_export([job], 'Availability check', format, layout)
         except ValueError as exc:
             reason = str(exc)
         items.append({'id': job.job_id, 'filename': source_filename(job.filename),
@@ -50,7 +52,204 @@ def export_checks(jobs):
                       'analysis_version': str(job.analysis_config.get('started_at') or ''),
                       'analyzed': bool(job.flash_result),
                       'partial': job.status in ('queued', 'analyzing', 'processing', 'error')})
-    return {'items': items, 'available': all(item['available'] for item in items)}
+    reason = None
+    if format == 'edl':
+        if len(jobs) > 999:
+            reason = 'CMX3600 EDL supports up to 999 media items; use FCPXML or OTIO for larger selections.'
+        elif all(item['available'] for item in items):
+            rates = {_fcpxml_timing(job_data(job))[0] for job in jobs}
+            if len(rates) > 1:
+                reason = 'A combined EDL needs one source frame rate. Use FCPXML or OTIO for mixed rates.'
+    return {'items': items, 'format': format, 'reason': reason, 'available': reason is None and all(item['available'] for item in items)}
+
+
+def source_values(job):
+    data = job_data(job)
+    if not source_url(job.local_path):
+        raise ValueError('Original media has no absolute file reference. Relink it before exporting.')
+    return data, _fcpxml_timing(data)
+
+
+def original_media_url(path):
+    value = str(path).replace('\\', '/')
+    if value.startswith('//'):
+        return quote('file:' + value, safe='/:')
+    return quote('file://' + value if value.startswith('/') else 'file:///' + value, safe='/:')
+
+
+def aspect_ratio(technical):
+    value = technical.get('sample_aspect_ratio')
+    if value in (None, '', 'N/A', '0:1'):
+        return None  # Unreported: let the editor read the original; do not invent square pixels.
+    try:
+        ratio = Fraction(str(value).replace(':', '/'))
+    except (ValueError, ZeroDivisionError) as exc:
+        raise ValueError('FCPXML needs a valid recorded pixel aspect ratio; use Resolve OTIO.') from exc
+    if ratio <= 0:
+        raise ValueError('FCPXML needs a positive recorded pixel aspect ratio; use Resolve OTIO.')
+    return ratio
+
+
+def observations(data):
+    yield from ((f"Clip {shot.get('shot_number')}", shot, shot.get('visual_description', ''))
+                for _, shot, _ in iter_shots(data))
+    yield from (('Dialogue', cue, cue.get('text', '')) for cue in data.get('transcript') or [])
+
+
+def metadata_notes(job):
+    mapped = editor_metadata(job, include_record=True)
+    readable = '\n'.join(f"{field['label']}: {field['value']}" for field in mapped['fields'])
+    return mapped, readable
+
+
+def combined_fcpxml(jobs, title, layout='timeline'):
+    root = ET.Element('fcpxml', version='1.10')
+    root.append(ET.Comment('Whole original media references. Recorded pixel aspect ratios are preserved.'))
+    resources = ET.SubElement(root, 'resources')
+    event = ET.SubElement(ET.SubElement(root, 'library'), 'event', name=title)
+    spine = None
+    timeline_rate = None
+    record = 0
+    for index, job in enumerate(jobs, 1):
+        data, (fps, origin, duration, basis) = source_values(job)
+        technical = data['technical']
+        width, height = technical.get('width'), technical.get('height')
+        if any(type(value) is not int or value <= 0 for value in (width, height)):
+            raise ValueError('FCPXML needs known source dimensions; use Resolve OTIO.')
+        if technical.get('rotation', 0) not in (None, 0):
+            raise ValueError('Rotated sources need an FCPXML orientation mapping; use Resolve OTIO.')
+        fmt_id, asset_id = f'f{index}', f'a{index}'
+        attributes = {'id': fmt_id, 'frameDuration': f'{fps.denominator}/{fps.numerator}s', 'width': str(width), 'height': str(height)}
+        if ratio := aspect_ratio(technical):
+            attributes.update(paspH=str(ratio.numerator), paspV=str(ratio.denominator))
+        ET.SubElement(resources, 'format', attributes)
+        time = lambda frame: f'{frame * fps.denominator}/{fps.numerator}s'
+        asset = ET.SubElement(resources, 'asset', id=asset_id, name=source_filename(job.filename), format=fmt_id,
+            start=time(origin), duration=time(_frames(duration, fps)), hasVideo='1', hasAudio='1' if technical.get('has_audio') else '0')
+        channels = technical.get('audio_channels') or []
+        if channels and all(type(channel) is int and channel > 0 for channel in channels):
+            asset.set('audioSources', str(len(channels))); asset.set('audioChannels', str(sum(channels)))
+        ET.SubElement(asset, 'media-rep', kind='original-media', src=original_media_url(job.local_path))
+        mapped, readable = metadata_notes(job)
+        metadata = ET.SubElement(asset, 'metadata')
+        ET.SubElement(metadata, 'md', key='org.videoanalyzer.sourceTimingBasis', value=basis)
+        ET.SubElement(metadata, 'md', key='org.videoanalyzer.analysis', value=json.dumps(mapped['record'], ensure_ascii=False))
+        if timeline_rate is None:
+            timeline_rate = fps
+            if layout == 'timeline':
+                sequence = ET.SubElement(ET.SubElement(event, 'project', name=title), 'sequence',
+                    format=fmt_id, duration='0s', tcStart='0s', tcFormat='NDF')
+                spine = ET.SubElement(sequence, 'spine')
+        count = _frames(duration, timeline_rate)
+        if count <= 0:
+            raise ValueError('A source is shorter than one timeline frame.')
+        timeline_time = lambda frame: f'{frame * timeline_rate.denominator}/{timeline_rate.numerator}s'
+        # Event clips provide the full media library; timeline clips keep selection order.
+        destinations = [event] if spine is None else [event, spine]
+        for parent in destinations:
+            attrs = {'ref': asset_id, 'name': job.metadata.get('title') or source_filename(job.filename),
+                     'format': fmt_id, 'start': time(origin), 'duration': time(_frames(duration, fps)) if parent is event else timeline_time(count)}
+            if parent is spine:
+                attrs['offset'] = timeline_time(record)
+            clip = ET.SubElement(parent, 'asset-clip', attrs)
+            ET.SubElement(clip, 'note').text = readable
+            for field in mapped['fields']:
+                if field['key'] == 'keywords':
+                    for tag in field.get('xmp_value') or []:
+                        ET.SubElement(clip, 'keyword', start=time(origin), duration=time(_frames(duration, fps)), value=str(tag))
+            for name, observation, note in observations(data):
+                first, last = segment_times(observation, duration)
+                first_frame, last_frame = _frames(first, fps), _frames(last, fps)
+                if last_frame > first_frame:
+                    ET.SubElement(clip, 'marker', start=time(origin + first_frame), duration=time(1), value=name,
+                                  note=f'{note}\nSource range: {first}–{last} seconds')
+        record += count
+    if spine is not None:
+        sequence.set('duration', timeline_time(record))
+    ET.indent(root)
+    return '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE fcpxml>\n' + ET.tostring(root, encoding='unicode')
+
+
+def combined_otio(jobs, title, layout='timeline'):
+    if layout != 'timeline':
+        raise ValueError('Resolve OTIO exports a timeline; choose FCPXML or Premiere XML for a media library only.')
+    import opentimelineio as otio
+    timeline = otio.schema.Timeline(name=title)
+    video = otio.schema.Track(name='Original media', kind=otio.schema.TrackKind.Video)
+    audio = otio.schema.Track(name='Original audio', kind=otio.schema.TrackKind.Audio)
+    timeline.tracks.extend([video, audio])
+    any_audio = False
+    for job in jobs:
+        data, (fps, origin, duration, basis) = source_values(job)
+        rate = float(fps)
+        span = otio.opentime.TimeRange(otio.opentime.RationalTime(origin, rate), otio.opentime.RationalTime(_frames(duration, fps), rate))
+        mapped, readable = metadata_notes(job)
+        reference = otio.schema.ExternalReference(target_url=original_media_url(job.local_path), available_range=span)
+        reference.metadata['video_analyzer'] = {'technical': portable_document(job)['technical'], 'source_timing_basis': basis}
+        clip = otio.schema.Clip(name=job.metadata.get('title') or source_filename(job.filename), media_reference=reference, source_range=span)
+        clip.metadata['video_analyzer'] = mapped['record']
+        clip.metadata['description'] = readable
+        for name, observation, note in observations(data):
+            first, last = segment_times(observation, duration)
+            first_frame, last_frame = _frames(first, fps), _frames(last, fps)
+            if last_frame > first_frame:
+                marker = otio.schema.Marker(name=name, marked_range=otio.opentime.TimeRange(
+                    otio.opentime.RationalTime(origin + first_frame, rate), otio.opentime.RationalTime(last_frame - first_frame, rate)),
+                    color=otio.schema.MarkerColor.BLUE, metadata={'note': note, 'description': note})
+                clip.markers.append(marker)
+        video.append(clip)
+        if data['technical'].get('has_audio'):
+            any_audio = True
+            audio_clip = copy.deepcopy(clip)
+            audio_clip.markers.clear()
+            audio.append(audio_clip)
+        else:
+            audio.append(otio.schema.Gap(source_range=otio.opentime.TimeRange(otio.opentime.RationalTime(0, rate), span.duration)))
+    if not any_audio:
+        timeline.tracks.remove(audio)
+    timeline.global_start_time = otio.opentime.RationalTime(0, float(_fcpxml_timing(job_data(jobs[0]))[0]))
+    timeline.metadata['video_analyzer'] = {'whole_originals': True, 'media_count': len(jobs),
+        'note': 'Original decoder handles pixel aspect/orientation. OTIO metadata is retained; editor field visibility varies.'}
+    return otio.adapters.write_to_string(timeline, adapter_name='otio_json')
+
+
+def combined_edl(jobs, title, layout='timeline'):
+    if layout != 'timeline':
+        raise ValueError('EDL exports a video-only timeline; choose XML for a media library only.')
+    if len(jobs) > 999:
+        raise ValueError('CMX3600 EDL supports up to 999 media items; use FCPXML or OTIO.')
+    rate = _fcpxml_timing(job_data(jobs[0]))[0]
+    if rate not in {Fraction(24), Fraction(25), Fraction(30), Fraction(24000, 1001), Fraction(30000, 1001)}:
+        raise ValueError('CMX3600 EDL supports 24, 25, 30, 23.976 or 29.97 fps non-drop sources.')
+    nominal = (rate.numerator + rate.denominator - 1) // rate.denominator
+    lines = [f'TITLE: {_one_line(title)}', 'FCM: NON-DROP FRAME', f'* FRAME RATE: {rate}',
+        '* VIDEO ONLY. AUDIO AND COMPLETE ANALYSIS ARE IN THE METADATA PACKAGE.', '']
+    record = 0
+    for index, job in enumerate(jobs, 1):
+        data, (fps, origin, duration, basis) = source_values(job)
+        if fps != rate:
+            raise ValueError('A combined EDL needs one source frame rate. Use FCPXML or OTIO for mixed rates.')
+        count = _frames(duration, fps)
+        if count <= 0:
+            raise ValueError('A source is shorter than one EDL frame.')
+        reel = f'VA{index:06d}'
+        lines.append(f'{index:03d}  {reel} V     C        {_frame_timecode(origin, nominal)} {_frame_timecode(origin + count, nominal)} '
+                     f'{_frame_timecode(record, nominal)} {_frame_timecode(record + count, nominal)}')
+        _, readable = metadata_notes(job)
+        lines.extend([f'* FROM CLIP NAME: {_one_line(source_filename(job.filename))}', f'* SOURCE FILE: {_one_line(job.local_path)}',
+                      f'* SOURCE TIMING BASIS: {basis}', f'* COMMENT: {_one_line(readable)}', ''])
+        record += count
+    return '\n'.join(lines)
+
+
+def render_editor_export(jobs, title, format='premiere_xml', layout='timeline'):
+    exporters = {'premiere_xml': (combined_project, 'xml', 'application/xml'),
+                 'fcpxml': (combined_fcpxml, 'fcpxml', 'application/xml'),
+                 'otio': (combined_otio, 'otio', 'application/json'), 'edl': (combined_edl, 'edl', 'text/plain')}
+    if format not in exporters:
+        raise ValueError('Unsupported editor export format.')
+    exporter, extension, mime = exporters[format]
+    return exporter(jobs, title, layout), extension, mime
 
 
 def logging(parent, job):
@@ -196,9 +395,9 @@ def combined_csv(jobs):
     return output.getvalue()
 
 
-def build_download(jobs, title, layout, include_metadata):
-    content = combined_project(jobs, title, layout)
-    temporary = tempfile.NamedTemporaryFile(prefix='video-analyzer-export-', suffix='.zip' if include_metadata else '.xml', delete=False)
+def build_download(jobs, title, layout, include_metadata, format='premiere_xml'):
+    content, extension, _ = render_editor_export(jobs, title, format, layout)
+    temporary = tempfile.NamedTemporaryFile(prefix='video-analyzer-export-', suffix='.zip' if include_metadata else '.' + extension, delete=False)
     path = Path(temporary.name)
     temporary.close()
     try:
@@ -206,7 +405,7 @@ def build_download(jobs, title, layout, include_metadata):
             path.write_text(content, encoding='utf-8')
             return path
         with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as archive:
-            archive.writestr('Video Analyzer.xml', content)
+            archive.writestr('Video Analyzer.' + extension, content)
             archive.writestr('library.json', json.dumps({'schema': 'video-analyzer.collection', 'schema_version': '1.0',
                 'assets': [portable_document(job) for job in jobs]}, ensure_ascii=False, indent=2))
             archive.writestr('clips.csv', combined_csv(jobs))
@@ -215,18 +414,19 @@ def build_download(jobs, title, layout, include_metadata):
                 stem = re.sub(r'[^\w .-]', '_', Path(source_filename(job.filename)).stem)[:100].strip(' .') or 'media'
                 folder = f'metadata/{index:04d}_{stem}'
                 record = {'id': job.job_id, 'filename': source_filename(job.filename), 'files': [], 'unavailable': {}}
-                for format in ('xmp', 'srt'):
+                for sidecar_format in ('xmp', 'srt'):
                     try:
-                        result, _, extension = export_library(job, format)
+                        result, _, sidecar_extension = export_library(job, sidecar_format)
                     except ValueError as exc:
-                        record['unavailable'][format] = str(exc)
+                        record['unavailable'][sidecar_format] = str(exc)
                         continue
-                    name = f'{folder}/{stem}.{extension}'
+                    name = f'{folder}/{stem}.{sidecar_extension}'
                     archive.writestr(name, result)
                     record['files'].append(name)
                 records.append(record)
-            archive.writestr('manifest.json', json.dumps({'media_count': len(jobs), 'media_included': False, 'items': records}, ensure_ascii=False, indent=2))
-            archive.writestr('Read me.txt', 'Extract this package, then import Video Analyzer.xml into Premiere (File > Import) or Resolve (File > Import > Timeline). The media bin contains whole original recordings; the optional timeline follows your selection order. Original video is referenced, not copied. Relink if a source has moved or is offline.\n\nDescriptions, source-relative analysis/dialogue markers and logging notes are in the XML. Editors differ in which XML metadata fields they expose. library.json and the XMP sidecars retain complete saved analysis; use the editor integration to sync supported native metadata fields. Subtitle files retain source-relative times, not combined-timeline times. manifest.json lists absent/invalid subtitle exports. AI timestamps are approximate. Mixed frame-rate timeline lengths round to sequence frames without changing the source in/out points.\n')
+            archive.writestr('manifest.json', json.dumps({'media_count': len(jobs), 'media_included': False,
+                'format': format, 'layout': layout, 'editor_file': 'Video Analyzer.' + extension, 'items': records}, ensure_ascii=False, indent=2))
+            archive.writestr('Read me.txt', f'Extract this package and import Video Analyzer.{extension}. Premiere XML: File > Import in Premiere. FCPXML: File > Import > Timeline in Resolve, or Import XML in Final Cut Pro. OTIO and EDL: File > Import > Timeline in Resolve. OTIO is an open interchange format, not a proprietary DRT/DRP project. EDL is video-only; relink by filenames/source timecodes and retain the metadata files.\n\nWhole originals are referenced, not copied. The optional timeline follows selection order. Relink sources if they have moved or are offline. Each format has its own timing and metadata limitations. FCPXML preserves recorded pixel aspect ratios; OTIO leaves image geometry to the original decoder. XML/OTIO contain analysis/dialogue markers, notes and metadata where supported; editor field visibility varies. library.json and XMP retain complete saved analysis, including fields an editor does not import automatically. Use the integration to sync supported native fields. SRTs retain source-relative times, not combined-timeline times. manifest.json lists absent/invalid subtitle exports. AI timestamps are approximate.\n')
         return path
     except BaseException:
         path.unlink(missing_ok=True)

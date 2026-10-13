@@ -8,3 +8,4 @@ python-multipart>=0.0.18
 aiofiles>=24.1.0
 opencv-python-headless>=4.10,<5
 numpy>=2,<3
+opentimelineio>=0.18,<0.19
