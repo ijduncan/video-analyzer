@@ -126,6 +126,30 @@ def test_export_preserves_reviewed_order_and_contiguous_record_offsets(client, a
     assert str(source) not in response.text
 
 
+def test_legacy_xml_export_preserves_reviewed_order_audio_and_original_reference(client, asset, tmp_path):
+    job, draft, source = prepare(asset, tmp_path)
+    job = update_job(job.job_id, technical={**job.technical, 'audio_channels': [2], 'audio_sample_rates': [48000]},
+                     transcript=[{'start_time': '02:02', 'end_time': '02:03', 'text': 'Useful dialogue'}])
+    draft = ready(job, draft)
+    draft['clips'].reverse()
+    update_job(job.job_id, rough_cut=draft)
+    response = client.get(f'/api/library/{job.job_id}/rough-cut/export',
+                          params={'revision': draft['revision'], 'format': 'premiere_xml'})
+    assert response.status_code == 200, response.text
+    assert response.headers['content-disposition'].endswith('_rough_cut.xml')
+    root = ET.fromstring(response.text)
+    assert root.tag == 'xmeml' and root.get('version') == '5'
+    video = root.findall('.//sequence/media/video/track/clipitem')
+    assert [(item.findtext('in'), item.findtext('out')) for item in video] == [('2928', '3024'), ('48', '120')]
+    assert [(item.findtext('start'), item.findtext('end')) for item in video] == [('0', '96'), ('96', '168')]
+    assert len(root.findall('.//sequence/media/audio/track')) == 2
+    assert root.findtext('.//file/pathurl').endswith('/original.mp4')
+    assert 'Useful dialogue' in root.findtext('.//logginginfo/lognote')
+    assert source.read_bytes() == b'original recording never modified'
+    assert client.get(f'/api/library/{job.job_id}/rough-cut/export',
+                      params={'revision': 'stale', 'format': 'premiere_xml'}).status_code == 409
+
+
 @pytest.mark.parametrize('clips', [[], [moment('missing', 2, 3)], [moment('1:1', 2, 5), moment('1:1', 2, 5)],
     [moment('1:1', 2, 121)], [moment('1:1', 3, 2)]])
 def test_invalid_clip_selection_rejected_without_replacing_draft(client, asset, tmp_path, clips):

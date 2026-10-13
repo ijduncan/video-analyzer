@@ -19,24 +19,24 @@ def source_url(path):
     return None
 
 
-def export_premiere_xml(job):
+def export_premiere_xml(job, *, preserve_order=False, title=None):
     data = job_data(job)
     fps, source_start, duration, basis = _fcpxml_timing(data)
     technical = data.get('technical') or {}
     width, height = technical.get('width'), technical.get('height')
     if any(type(value) is not int or value <= 0 for value in (width, height)):
-        raise ValueError('Premiere XML requires known source dimensions')
+        raise ValueError('Legacy FCP7 XML requires known source dimensions')
     if technical.get('rotation', 0) not in (None, 0):
-        raise ValueError('Premiere XML requires a verified orientation mapping for rotated media')
+        raise ValueError('Legacy FCP7 XML requires a verified orientation mapping for rotated media')
     if technical.get('sample_aspect_ratio') not in (None, '', '1:1', '1/1', 'N/A'):
-        raise ValueError('Premiere XML requires a verified pixel aspect mapping for non-square media')
+        raise ValueError('Legacy FCP7 XML requires a verified pixel aspect mapping for non-square media')
     channels = technical.get('audio_channels') or []
     if technical.get('has_audio') and (not channels or any(type(value) is not int or value < 1 for value in channels)):
-        raise ValueError('Premiere XML needs the original audio channel layout. Open the linked source to refresh its media metadata.')
+        raise ValueError('Legacy FCP7 XML needs the original audio channel layout. Open the linked source to refresh its media metadata.')
     channel_count = sum(channels) if technical.get('has_audio') else 0
     if channel_count > 32:
-        raise ValueError('Premiere XML supports up to 32 original audio channels')
-    shots = _nle_shots(data, fps, duration)
+        raise ValueError('Legacy FCP7 XML supports up to 32 original audio channels')
+    shots = _nle_shots(data, fps, duration, preserve_order=preserve_order)
     nominal = (fps.numerator + fps.denominator - 1) // fps.denominator
     source_frames = _frames(duration, fps)
     total = sum(last - first for first, last, *_ in shots)
@@ -55,7 +55,7 @@ def export_premiere_xml(job):
     if basis == 'source_relative_file_zero':
         root.append(ET.Comment('No embedded source timecode: file-relative zero is used; it is not an asserted camera timecode.'))
     sequence = ET.SubElement(root, 'sequence', id='va-sequence')
-    text(sequence, 'name', f'{filename} Shot List')
+    text(sequence, 'name', title or f'{filename} Shot List')
     text(sequence, 'duration', total)
     rate(sequence)
     tc = ET.SubElement(sequence, 'timecode')

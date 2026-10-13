@@ -28,8 +28,8 @@ SLATE_COLUMNS = (
 )
 EXPORT_FORMATS = (
     ("json", "JSON metadata"), ("csv", "CSV shot list"), ("xmp", "XMP sidecar"),
-    ("srt", "SRT subtitles"), ("edl", "EDL edit list"), ("fcpxml", "Final Cut Pro XML"),
-    ("premiere_xml", "Premiere XML"),
+    ("srt", "SRT subtitles"), ("edl", "EDL edit list"), ("fcpxml", "Final Cut Pro X XML"),
+    ("premiere_xml", "Legacy Final Cut Pro 7 XML"),
 )
 NS = {
     "x": "adobe:ns:meta/",

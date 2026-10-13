@@ -127,11 +127,11 @@ export function RoughCutPanel({ asset, active, onRefresh, onConfigure, configure
     try { const value = await getRoughCut(asset.job_id); setDraft(value); setEdits(editsFor(value)); setPage(0) }
     catch (cause) { setError(errorMessage(cause)) } finally { setWorking(false) }
   }
-  async function download(format: 'fcpxml' | 'json') {
+  async function download(format: 'fcpxml' | 'premiere_xml' | 'json') {
     if (!draft || dirty) return
     setWorking(true); setError('')
     try {
-      await saveExport(`rough_cut.${format}`, roughCutExportUrl(asset.job_id, draft.revision, format))
+      await saveExport(`rough_cut.${format === 'premiere_xml' ? 'xml' : format}`, roughCutExportUrl(asset.job_id, draft.revision, format))
     } catch (cause) { setError(errorMessage(cause)) }
     finally { setWorking(false) }
   }
@@ -171,7 +171,7 @@ export function RoughCutPanel({ asset, active, onRefresh, onConfigure, configure
       {draft?.filler_removal && <details className="lw-details"><summary>{draft.filler_removal.removed_count ? `Removed ${draft.filler_removal.removed_count} filler sections · ${draft.filler_removal.removed_seconds.toFixed(2)}s` : 'Filler check: no clear removals found'}</summary><p className="lw-model-note">Listen to the detected filler audio and review the joins. Restore an original excerpt below to undo its filler cuts; manual edits may restore these detections.</p><div className="rc-filler-review">{draft.filler_spans?.map((span, index) => <button key={`${span.start_time}-${index}`} className="lw-text-button" disabled={!asset.preview_url} onClick={() => preview([{ moment_id: `removed:${index}`, start_seconds: span.start_seconds, end_seconds: span.end_seconds }])}>{span.start_time}–{span.end_time} · {span.text}</button>)}</div></details>}
       {draft?.warnings.map(warning => <p className="lw-model-note" key={warning}>{warning}</p>)}
       {draft?.cost_estimate?.estimated_cost_usd != null && <p className="lw-model-note">Estimated API cost for this draft: ${draft.cost_estimate.estimated_cost_usd.toFixed(4)} USD</p>}
-      {draft?.status === 'ready' && <div className="rc-actions"><button className="lw-button lw-button-primary" disabled={!dirty || !valid || working} onClick={save}>{dirty ? 'Save changes' : 'Saved'}</button><button className="lw-button" disabled={dirty || working || !valid} onClick={() => download('fcpxml')}>Export timeline XML</button><button className="lw-text-button" disabled={dirty || working || !valid} onClick={() => download('json')}>JSON</button></div>}
+      {draft?.status === 'ready' && <div className="rc-actions"><button className="lw-button lw-button-primary" disabled={!dirty || !valid || working} onClick={save}>{dirty ? 'Save changes' : 'Saved'}</button><button className="lw-button" disabled={dirty || working || !valid} onClick={() => download('premiere_xml')}>Legacy XML · Premiere / Resolve</button><button className="lw-button" disabled={dirty || working || !valid} onClick={() => download('fcpxml')}>FCPXML · Final Cut Pro / Resolve</button><button className="lw-text-button" disabled={dirty || working || !valid} onClick={() => download('json')}>JSON</button></div>}
     {dirty && <div className="rc-actions"><p role="status">Save your changes before exporting or generating again.</p><button className="lw-text-button" disabled={working} onClick={discard}>Discard changes</button></div>}
       {draft?.status === 'ready' && <p className="lw-model-note">Import timeline XML into Resolve or Final Cut Pro, then relink to the original recording. Media is not copied.</p>}
     </div><div className="rc-excerpts">

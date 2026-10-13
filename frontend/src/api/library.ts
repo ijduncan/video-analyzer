@@ -172,7 +172,7 @@ export function saveRoughCut(id: string, revision: string, clips: CutClipEdit[])
 export function cancelRoughCut(id: string) {
   return request<{ status: string }>(`/api/library/${encodeURIComponent(id)}/rough-cut/cancel`, { method: 'POST' })
 }
-export function roughCutExportUrl(id: string, revision: string, format: 'fcpxml' | 'json') {
+export function roughCutExportUrl(id: string, revision: string, format: 'fcpxml' | 'premiere_xml' | 'json') {
   return `/api/library/${encodeURIComponent(id)}/rough-cut/export?${new URLSearchParams({ revision, format })}`
 }
 export interface LibraryProject {

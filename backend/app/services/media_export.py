@@ -172,7 +172,7 @@ def combined_fcpxml(jobs, title, layout='timeline'):
 
 def combined_otio(jobs, title, layout='timeline'):
     if layout != 'timeline':
-        raise ValueError('Resolve OTIO exports a timeline; choose FCPXML or Premiere XML for a media library only.')
+        raise ValueError('Resolve OTIO exports a timeline; choose FCPXML or legacy FCP7 XML for a media library only.')
     import opentimelineio as otio
     timeline = otio.schema.Timeline(name=title)
     video = otio.schema.Track(name='Original media', kind=otio.schema.TrackKind.Video)
@@ -426,7 +426,7 @@ def build_download(jobs, title, layout, include_metadata, format='premiere_xml')
                 records.append(record)
             archive.writestr('manifest.json', json.dumps({'media_count': len(jobs), 'media_included': False,
                 'format': format, 'layout': layout, 'editor_file': 'Video Analyzer.' + extension, 'items': records}, ensure_ascii=False, indent=2))
-            archive.writestr('Read me.txt', f'Extract this package and import Video Analyzer.{extension}. Premiere XML: File > Import in Premiere. FCPXML: File > Import > Timeline in Resolve, or Import XML in Final Cut Pro. OTIO and EDL: File > Import > Timeline in Resolve. OTIO is an open interchange format, not a proprietary DRT/DRP project. EDL is video-only; relink by filenames/source timecodes and retain the metadata files.\n\nWhole originals are referenced, not copied. The optional timeline follows selection order. Relink sources if they have moved or are offline. Each format has its own timing and metadata limitations. FCPXML preserves recorded pixel aspect ratios; OTIO leaves image geometry to the original decoder. XML/OTIO contain analysis/dialogue markers, notes and metadata where supported; editor field visibility varies. library.json and XMP retain complete saved analysis, including fields an editor does not import automatically. Use the integration to sync supported native fields. SRTs retain source-relative times, not combined-timeline times. manifest.json lists absent/invalid subtitle exports. AI timestamps are approximate.\n')
+            archive.writestr('Read me.txt', f'Extract this package and import Video Analyzer.{extension}. Legacy Final Cut Pro 7 XML (.xml): File > Import in Premiere or File > Import > Timeline in Resolve. Final Cut Pro X XML (.fcpxml): File > Import > Timeline in Resolve, or Import XML in Final Cut Pro. OTIO and EDL: File > Import > Timeline in Resolve. OTIO is an open interchange format, not a proprietary DRT/DRP project. EDL is video-only; relink by filenames/source timecodes and retain the metadata files.\n\nWhole originals are referenced, not copied. The optional timeline follows selection order. Relink sources if they have moved or are offline. Each format has its own timing and metadata limitations. FCPXML preserves recorded pixel aspect ratios; OTIO leaves image geometry to the original decoder. XML/OTIO contain analysis/dialogue markers, notes and metadata where supported; editor field visibility varies. library.json and XMP retain complete saved analysis, including fields an editor does not import automatically. Use the integration to sync supported native fields. SRTs retain source-relative times, not combined-timeline times. manifest.json lists absent/invalid subtitle exports. AI timestamps are approximate.\n')
         return path
     except BaseException:
         path.unlink(missing_ok=True)

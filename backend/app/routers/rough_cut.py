@@ -13,6 +13,7 @@ from app.services import rough_cut
 from app.services.job_store import claim_rough_cut, update_job
 from app.services.library_export import source_filename
 from app.services.nle_export import export_fcpxml
+from app.services.premiere_xml import export_premiere_xml
 
 router = APIRouter(prefix='/api/library')
 
@@ -69,7 +70,7 @@ async def edit_cut(job_id: str, body: RoughCutEdit):
 
 @router.get('/{job_id}/rough-cut/export')
 async def export_cut(job_id: str, revision: str = Query(max_length=100),
-                     format: str = Query(default='fcpxml', pattern='^(fcpxml|json)$')):
+                     format: str = Query(default='fcpxml', pattern='^(fcpxml|premiere_xml|json)$')):
     job = require_job(job_id)
     try:
         draft = rough_cut.validate_current(job, revision)
@@ -77,10 +78,17 @@ async def export_cut(job_id: str, revision: str = Query(max_length=100),
             content = export_fcpxml(rough_cut.export_data(job, draft), preserve_order=True,
                                    title=source_filename(job.filename) + ' Rough Cut')
             media_type = 'application/xml'
+        elif format == 'premiere_xml':
+            data = {**rough_cut.export_data(job, draft), 'local_path': job.local_path,
+                    'metadata': job.metadata, 'transcript': job.transcript}
+            content = export_premiere_xml(data, preserve_order=True,
+                                         title=source_filename(job.filename) + ' Rough Cut')
+            media_type = 'application/xml'
         else:
             content, media_type = json.dumps(draft, ensure_ascii=False, indent=2), 'application/json'
     except (OSError, ValueError) as exc:
         raise HTTPException(409, str(exc) if isinstance(exc, ValueError) else 'Original recording is unavailable')
-    filename = source_filename(job.filename).rsplit('.', 1)[0] + '_rough_cut.' + format
+    extension = 'xml' if format == 'premiere_xml' else format
+    filename = source_filename(job.filename).rsplit('.', 1)[0] + '_rough_cut.' + extension
     return Response(content, media_type=media_type,
                     headers={'Content-Disposition': f"attachment; filename*=UTF-8''{quote(filename, safe='')}"})
