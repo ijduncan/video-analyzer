@@ -72,6 +72,17 @@ class NativeFiles:
             file_types=('Video media (*.mp4;*.mov;*.mxf;*.mkv;*.avi;*.webm;*.m4v;*.mpg;*.mpeg;*.mts;*.m2ts;*.braw;*.r3d;*.ari;*.arx;*.crm)', 'All files (*.*)'))
         return list(paths or [])
 
+    def choose_export_file(self, filename):
+        if not self._trusted():
+            raise ValueError('Open the local Video Analyzer window to save exports.')
+        from app.services.export_destination import valid_filename
+        valid_filename(filename)
+        import webview
+        extension = Path(filename).suffix.lstrip('.')
+        paths = self._window.create_file_dialog(webview.FileDialog.SAVE, save_filename=filename,
+            file_types=(f'{extension.upper()} export (*.{extension})',))
+        return paths[0] if paths else None
+
     def _drop(self, event):
         if not self._trusted():
             return

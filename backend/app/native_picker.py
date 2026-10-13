@@ -8,7 +8,7 @@ import threading
 _picker_lock = threading.Lock()
 
 
-def _windows_picker():
+def _windows_picker(save_name=None):
     from ctypes import wintypes as w
 
     # OPENFILENAMEW from the Windows SDK commdlg.h (Windows fields only).
@@ -23,24 +23,58 @@ def _windows_picker():
             ('dwReserved', w.DWORD), ('FlagsEx', w.DWORD)]
 
     dialog = ctypes.WinDLL('comdlg32', use_last_error=True)
-    dialog.GetOpenFileNameW.argtypes = [ctypes.POINTER(OpenFileName)]
-    dialog.GetOpenFileNameW.restype = w.BOOL
+    chooser = dialog.GetSaveFileNameW if save_name else dialog.GetOpenFileNameW
+    chooser.argtypes = [ctypes.POINTER(OpenFileName)]
+    chooser.restype = w.BOOL
     dialog.CommDlgExtendedError.argtypes = []
     dialog.CommDlgExtendedError.restype = w.DWORD
     buffer = ctypes.create_unicode_buffer(65536)
+    if save_name:
+        buffer.value = save_name
     form = OpenFileName(lStructSize=ctypes.sizeof(OpenFileName), nMaxFile=len(buffer),
         lpstrFile=ctypes.cast(buffer, w.LPWSTR), lpstrTitle='Choose original video — Video Analyzer',
         lpstrFilter='Video media\0*.mp4;*.mov;*.mxf;*.mkv;*.avi;*.webm;*.m4v;*.mpg;*.mpeg;*.mts;*.m2ts;*.braw;*.r3d;*.ari;*.arx;*.crm\0All files\0*.*\0\0',
         nFilterIndex=1,
         # EXPLORER, ALLOWMULTISELECT, FILEMUSTEXIST, PATHMUSTEXIST, NOCHANGEDIR.
         Flags=0x80000 | 0x200 | 0x1000 | 0x800 | 0x8)
-    if not dialog.GetOpenFileNameW(ctypes.byref(form)):
+    if save_name:
+        extension = Path(save_name).suffix.lstrip('.')
+        form.lpstrTitle = 'Save export — Video Analyzer'
+        form.lpstrFilter = f'{extension.upper()} export\0*.{extension}\0\0'
+        form.lpstrDefExt = extension
+        form.Flags = 0x80000 | 0x2 | 0x800 | 0x8  # Explorer, overwrite prompt, existing folder, no cwd change.
+    if not chooser(ctypes.byref(form)):
         error = dialog.CommDlgExtendedError()
         if error:
             raise OSError(f'The media picker failed (Windows error {error}).')
         return []
     parts = ''.join(buffer).split('\0\0', 1)[0].split('\0')
     return parts if len(parts) == 1 else [str(Path(parts[0]) / name) for name in parts[1:]]
+
+
+def choose_save_file(filename):
+    if not _picker_lock.acquire(blocking=False):
+        raise ValueError('A file picker is already open.')
+    try:
+        if sys.platform == 'win32':
+            paths = _windows_picker(filename)
+            return paths[0] if paths else None
+        if sys.platform == 'darwin':
+            script = '''on run argv
+try
+set chosen to choose file name with prompt "Save export — Video Analyzer" default name (item 1 of argv)
+return POSIX path of chosen
+on error number -128
+return ""
+end try
+end run'''
+            result = subprocess.run(['/usr/bin/osascript', '-e', script, filename], capture_output=True, text=True)
+            if result.returncode:
+                raise OSError('Could not open the save dialog.')
+            return result.stdout.strip() or None
+        raise OSError('Use the desktop app to choose an export location.')
+    finally:
+        _picker_lock.release()
 
 
 def choose_files():

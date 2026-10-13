@@ -92,6 +92,10 @@ A drawn outline is compared against the candidate silhouettes already identified
 
 ## Export useful information
 
+Exports from the Media library, Export screen, and Rough cut generator open **Save As** so you can choose the destination for the XML, editor package, or other export. Cancelling leaves files unchanged. Editor XML references the absolute original video locations, independently of where you save the export.
+
+Enable **Write XMP sidecars beside original media** to also save the complete analysis as `original-name.xmp` in each original's folder. It is off by default. Existing XMP is merged while preserving other metadata and editor marker tracks; a `.video-analyzer-….bak` copy preserves the previous bytes before changes. Offline/read-only sources, ambiguous XMP, and conflicting sidecar names are reported per file without discarding the editor export. Selected-clip exports still write the complete original's analysis to this optional sidecar. Video files are never rewritten. Sidecar recognition varies by editor and media format; use the integrations to sync supported native fields.
+
 From the **Media** library, check individual recordings (or **Select page**) and choose **Export selected**. Choose **Final Cut Pro XML** for Resolve/Final Cut Pro, **Resolve OTIO** for OpenTimelineIO, **Premiere XML**, or a basic **CMX3600 EDL**. Every format references the selected whole originals in selection order. XML/OTIO keep analysis and dialogue markers; they do not split the originals into subclips. Premiere XML and FCPXML also offer **Media library only** (Premiere and Final Cut Pro respectively).
 
 **Include complete metadata package** downloads one ZIP containing `Video Analyzer` with the selected format's extension, combined JSON and CSV, each source's XMP sidecar, and available source-timed SRT transcripts. Extract it, then use **File → Import** for Premiere XML, **File → Import → Timeline** in Resolve, or **Import XML** in Final Cut Pro. Original video is referenced in place, not copied. Relink media if its original location is unavailable.

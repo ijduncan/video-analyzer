@@ -1,10 +1,12 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { exportUrl, getExportOptions } from '../../api/library'
+import { saveExport, savedExportMessage } from '../../api/exportSave'
 import type { AssetDetail, ExportFormat, ExportOptions } from '../../api/library'
 import type { Shot } from '../../api/types'
 import { Icon } from './Icon'
 import { duration, errorMessage } from './format'
 import './ExportPanel.css'
+import './MediaExportDialog.css'
 
 interface Props {
   asset: AssetDetail
@@ -50,8 +52,8 @@ export function ExportPanel({ asset, shots, selectedShots, staleSelection, onCho
   const [downloading, setDownloading] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [writeSidecars, setWriteSidecars] = useState(false)
   const downloadController = useRef<AbortController | null>(null)
-  const downloadObjectUrl = useRef<string | null>(null)
   const choiceId = useId()
   const isSelection = scope === 'selected_shots'
   const blocked = isSelection && (staleSelection || selectedShots.length === 0)
@@ -91,9 +93,6 @@ export function ExportPanel({ asset, shots, selectedShots, staleSelection, onCho
   }, [blocked, isSelection, jobId, selectedNumbers, run, requestKey])
 
   useEffect(() => () => { downloadController.current?.abort() }, [requestKey])
-  useEffect(() => () => {
-    if (downloadObjectUrl.current) URL.revokeObjectURL(downloadObjectUrl.current)
-  }, [])
 
   function changeScope(next: Props['initialScope']) {
     setScope(next); setPage(0); setError(''); setNotice('')
@@ -121,25 +120,9 @@ export function ExportPanel({ asset, shots, selectedShots, staleSelection, onCho
     setDownloading(true); setError(''); setNotice('')
     try {
       const numbers = isSelection ? selectedNumbers.split(',').map(Number) : undefined
-      const response = await fetch(exportUrl(jobId, format, numbers, run), { signal: controller.signal })
-      if (!response.ok) {
-        const body = await response.json().catch(() => null)
-        throw new Error(typeof body?.detail === 'string' ? body.detail : `Export failed (${response.status}). Please try again.`)
-      }
-      const blob = await response.blob()
-      if (controller.signal.aborted) return
-      const objectUrl = URL.createObjectURL(blob)
-      downloadObjectUrl.current = objectUrl
-      const anchor = document.createElement('a')
-      anchor.href = objectUrl
-      anchor.download = safeFilename(asset.metadata.title || asset.filename, format, isSelection)
-      document.body.appendChild(anchor)
-      anchor.click(); anchor.remove()
-      window.setTimeout(() => {
-        URL.revokeObjectURL(objectUrl)
-        if (downloadObjectUrl.current === objectUrl) downloadObjectUrl.current = null
-      }, 1000)
-      setNotice(`${formatLabel(format)} download started.`)
+      const result = await saveExport(safeFilename(asset.metadata.title || asset.filename, format, isSelection),
+        exportUrl(jobId, format, numbers, run), undefined, writeSidecars, controller.signal)
+      if (!controller.signal.aborted) setNotice(savedExportMessage(result))
     } catch (cause) {
       if (!controller.signal.aborted) setError(errorMessage(cause))
     } finally {
@@ -191,9 +174,10 @@ export function ExportPanel({ asset, shots, selectedShots, staleSelection, onCho
       </fieldset>
       {loading && <p className="ep-hint" role="status">Checking available formats…</p>}
       {current?.error && !blocked && <div className="ep-alert" role="alert"><p>{current.error}</p><button className="ep-button" onClick={() => setRetry(value => value + 1)}>Check again</button></div>}
+      <label className="me-checkbox"><input type="checkbox" checked={writeSidecars} disabled={downloading} onChange={event => setWriteSidecars(event.target.checked)} /><span>Write XMP sidecar beside original media<small>Includes the complete saved analysis, even when exporting selected clips. Existing metadata is merged and backed up; video files stay unchanged.</small></span></label>
       <div className="ep-download-bar">
-        <div><strong>{formatLabel(format)} · {isSelection ? `${selectedShots.length} selected ${selectedShots.length === 1 ? 'clip' : 'clips'}` : 'Whole video'}</strong><p>{blocked ? 'Choose a current selection to continue.' : chosen && !chosen.available ? chosen.reason : format === 'premiere_xml' ? 'Originals stay in place. Relink in the editor if their location changes.' : format === 'fcpxml' ? 'Keep the original video beside the XML, or relink it in your editor.' : format === 'srt' && isSelection ? 'Complete overlapping subtitle cues keep their original timestamps.' : 'Metadata and editorial interchange files reference your source video.'}</p></div>
-        <button className="ep-button ep-primary" disabled={!canDownload} onClick={() => void download()}><Icon name="download" size={17} />{downloading ? 'Preparing download…' : `Download ${formatLabel(format)}`}</button>
+        <div><strong>{formatLabel(format)} · {isSelection ? `${selectedShots.length} selected ${selectedShots.length === 1 ? 'clip' : 'clips'}` : 'Whole video'}</strong><p>{blocked ? 'Choose a current selection to continue.' : chosen && !chosen.available ? chosen.reason : format === 'premiere_xml' ? 'Originals stay in place. Relink in the editor if their location changes.' : format === 'fcpxml' ? 'XML references the original video path. Relink in the editor if its location changes.' : format === 'srt' && isSelection ? 'Complete overlapping subtitle cues keep their original timestamps.' : 'Metadata and editorial interchange files reference your source video.'}</p></div>
+        <button className="ep-button ep-primary" disabled={!canDownload} onClick={() => void download()}><Icon name="download" size={17} />{downloading ? 'Preparing export…' : `Save ${formatLabel(format)}…`}</button>
       </div>
       {error && <p className="ep-alert" role="alert">{error}</p>}
       {notice && <p className="ep-notice" role="status">{notice}</p>}

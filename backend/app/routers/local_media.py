@@ -5,7 +5,7 @@ import os
 import time
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Header
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.utils.video_formats import get_mime_type
 
@@ -35,6 +35,98 @@ def require_local_import(request: Request):
 
 router = APIRouter(prefix='/api/local-media', dependencies=[Depends(require_local_import)])
 _import_progress = {}
+
+
+class ExportDestination(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    filename: str = Field(min_length=1, max_length=220)
+    path: str | None = Field(default=None, max_length=4096)
+
+
+@router.post('/export-destination')
+async def choose_export_destination(body: ExportDestination, request: Request, authorization: str | None = Header(default=None)):
+    from app.services.export_destination import grant, valid_filename
+    try:
+        valid_filename(body.filename)
+        if body.path is not None:
+            from app.services.editor_bridge import require_editor
+            await require_editor(request, authorization)
+            path = body.path
+        else:
+            from app.native_picker import choose_save_file
+            path = await asyncio.to_thread(choose_save_file, body.filename)
+        return grant(path, body.filename) if path else {'cancelled': True}
+    except (OSError, ValueError) as exc:
+        raise HTTPException(422, str(exc))
+
+
+class SaveDownload(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    ticket: str = Field(min_length=1, max_length=100)
+    url: str = Field(min_length=1, max_length=21000)
+    media: dict | None = None
+    write_sidecars: bool = False
+
+
+@router.post('/save-download')
+async def save_download(body: SaveDownload, request: Request):
+    import re
+    import httpx
+    from pathlib import Path
+    from urllib.parse import parse_qs
+    from app.models.library import MediaExportRequest
+    from app.services.export_destination import consume, save
+    from app.services.job_store import get_job
+    from app.services.xmp_sidecars import write_sidecars
+    pattern = r'^/api/library/(?:([A-Za-z0-9-]{1,100})/(?:export|rough-cut/export)|media-export)(?:\?[^#\x00]*)?$'
+    match = re.fullmatch(pattern, body.url)
+    if not match:
+        raise HTTPException(422, 'Unsupported export download.')
+    try:
+        if body.media is not None:
+            if body.url != '/api/library/media-export':
+                raise ValueError('Invalid media export URL.')
+            media = MediaExportRequest.model_validate(body.media)
+            extension = 'zip' if media.include_metadata else 'xml' if media.format == 'premiere_xml' else media.format
+            ids = media.job_ids
+        else:
+            if not match.group(1):
+                raise ValueError('Select media to export.')
+            ids = [match.group(1)]
+            format = parse_qs(urlsplit(body.url).query).get('format', ['json'])[0]
+            extension = 'xml' if format == 'premiere_xml' else format
+        path, existing = consume(body.ticket, extension)
+        jobs = [get_job(id) for id in ids]
+        if any(job is None for job in jobs):
+            raise ValueError('A selected media item was removed. Refresh your selection.')
+        if body.write_sidecars and any(path.resolve() == Path(job.local_path).with_suffix('.xmp').resolve()
+                                      for job in jobs if job.local_path):
+            raise ValueError('Choose a separate export destination; the sidecar checkbox writes XMP beside the originals.')
+        # Invoke the existing validated exporter in-process, without arbitrary URL/network access.
+        transport = httpx.ASGITransport(app=request.app, client=('127.0.0.1', 50000))
+        async with httpx.AsyncClient(transport=transport, base_url=str(request.base_url)) as client:
+            response = await client.post(body.url, json=media.model_dump()) if body.media is not None else await client.get(body.url)
+        if response.status_code != 200:
+            detail = response.json().get('detail', 'Could not prepare export.')
+            raise HTTPException(response.status_code, detail)
+        content = response.content
+        if extension == 'fcpxml':
+            # Single-source/rough-cut exporters previously used relative media URLs.
+            import xml.etree.ElementTree as ET
+            from app.services.media_export import original_media_url
+            root = ET.fromstring(content)
+            if len(jobs) == 1:
+                from app.services.premiere_xml import source_url
+                if not source_url(jobs[0].local_path):
+                    raise ValueError('Relink the original media before saving this FCPXML.')
+                for reference in root.findall('.//asset/media-rep'):
+                    reference.set('src', original_media_url(jobs[0].local_path))
+            content = '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE fcpxml>\n' + ET.tostring(root, encoding='unicode')
+        await asyncio.to_thread(save, path, existing, content)
+        sidecars = await asyncio.to_thread(write_sidecars, jobs) if body.write_sidecars else []
+        return {'saved': True, 'path': str(path), 'sidecars': sidecars}
+    except (OSError, ValueError) as exc:
+        raise HTTPException(422, str(exc))
 
 
 class DisplayColorRequest(BaseModel):

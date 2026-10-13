@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { downloadMediaExport, getMediaExportOptions } from '../../api/library'
+import { getMediaExportOptions } from '../../api/library'
+import { saveExport, savedExportMessage } from '../../api/exportSave'
 import type { MediaExportFormat, MediaExportOptions } from '../../api/library'
 import { errorMessage } from './format'
 import { Icon } from './Icon'
@@ -21,6 +22,7 @@ export function MediaExportDialog({ media, onClose }: {
   const [layout, setLayout] = useState<'timeline' | 'bin'>('timeline')
   const [format, setFormat] = useState<MediaExportFormat>('fcpxml')
   const [includeMetadata, setIncludeMetadata] = useState(true)
+  const [writeSidecars, setWriteSidecars] = useState(false)
   const idsKey = JSON.stringify(media.map(item => item.id))
   const details = new Map(options?.items.map(item => [item.id, item]))
   const extension = format === 'premiere_xml' ? 'xml' : format
@@ -45,21 +47,11 @@ export function MediaExportDialog({ media, onClose }: {
     const controller = new AbortController()
     downloadController.current = controller
     try {
-      const response = await downloadMediaExport(JSON.parse(idsKey), title.trim(), layout, includeMetadata,
-        Object.fromEntries(options.items.map(item => [item.id, item.analysis_version])), controller.signal, format)
-      if (!response.ok) {
-        const body = await response.json().catch(() => null)
-        if (response.status === 409) setOptions(null)
-        throw new Error(typeof body?.detail === 'string' ? body.detail : `Export failed (${response.status}).`)
-      }
-      const blob = await response.blob()
-      if (controller.signal.aborted) return
-      const url = URL.createObjectURL(blob)
-      const anchor = document.createElement('a')
-      anchor.href = url; anchor.download = `Video Analyzer media export.${includeMetadata ? 'zip' : extension}`
-      document.body.appendChild(anchor); anchor.click(); anchor.remove()
-      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
-      setNotice(`Export download started for ${media.length} media ${media.length === 1 ? 'item' : 'items'}.`)
+      const result = await saveExport(`Video Analyzer media export.${includeMetadata ? 'zip' : extension}`, '/api/library/media-export', {
+        job_ids: JSON.parse(idsKey), title: title.trim(), layout, format, include_metadata: includeMetadata,
+        analysis_versions: Object.fromEntries(options.items.map(item => [item.id, item.analysis_version])),
+      }, writeSidecars, controller.signal)
+      if (!controller.signal.aborted) setNotice(savedExportMessage(result))
     } catch (cause) { if (!controller.signal.aborted) setError(errorMessage(cause)) }
     finally { lock.current = false; setBusy(false); downloadController.current = null }
   }
@@ -73,6 +65,7 @@ export function MediaExportDialog({ media, onClose }: {
       <label className="me-field">Create<select value={layout} onChange={event => { setLayout(event.target.value as 'timeline' | 'bin'); setOptions(null); setError(''); setNotice('') }}><option value="timeline">Whole-media timeline{format === 'premiere_xml' || format === 'fcpxml' ? ' and media library' : ''}</option>{libraryOnly && <option value="bin">Media library only · {format === 'premiere_xml' ? 'Premiere' : 'Final Cut Pro'}</option>}</select></label>
       <p className="me-hint">Whole recordings, in selection order. {format === 'edl' ? 'EDL carries video cuts and comments; audio, transcripts and full metadata stay in the package. All sources must share one frame rate; maximum 999 items.' : 'Analysis clips are markers; they don’t split your recordings.'} {format === 'fcpxml' ? 'Recorded pixel aspect ratios are preserved, including 2× anamorphic.' : format === 'otio' ? 'Resolve reads pixel aspect and orientation from the originals. OTIO is an open timeline format, not a native DRT/DRP project.' : format === 'premiere_xml' ? 'The timeline uses the first selected source’s frame rate and dimensions.' : ''}</p>
       <label className="me-checkbox"><input type="checkbox" checked={includeMetadata} onChange={event => setIncludeMetadata(event.target.checked)} /><span>Include complete metadata package<small>One ZIP with the selected editor file, full analysis JSON, combined CSV, XMP sidecars and available SRT transcripts.</small></span></label>
+      <label className="me-checkbox"><input type="checkbox" checked={writeSidecars} onChange={event => setWriteSidecars(event.target.checked)} /><span>Write XMP sidecars beside original media<small>Writes the complete saved analysis beside each original. Existing metadata is merged and backed up. Video files stay unchanged; editor files reference the originals.</small></span></label>
     </fieldset>
     <p className="me-hint">Originals stay in place; relink in the editor if they’ve moved or are offline. Each format has its own metadata support. Use the editor integration to sync other native metadata fields; the package retains the complete data.</p>
     {!options && !error && <p role="status">Checking selected media…</p>}
@@ -83,6 +76,6 @@ export function MediaExportDialog({ media, onClose }: {
     {options && !options.available && <p className="me-error" role="alert">{options.reason || 'Some media cannot be included in this format. Try another format or resolve the issues above. No media will be silently skipped.'}</p>}
     {error && <p className="me-error" role="alert">{error}</p>}
     {notice && <p role="status">{notice}</p>}
-    <footer className="lw-dialog-actions"><button className="lw-button" disabled={busy} onClick={() => { setError(''); setOptions(null); setRetry(value => value + 1) }}>Check again</button><button className="lw-button" disabled={busy} onClick={onClose}>Close</button><button className="lw-button lw-button-primary" disabled={busy || !options?.available || options.format !== format || !title.trim()} onClick={() => void download()}><Icon name="download" size={16} />{busy ? 'Preparing export…' : includeMetadata ? 'Download editor package' : `Download ${format === 'premiere_xml' ? 'XML' : format.toUpperCase()}`}</button></footer>
+    <footer className="lw-dialog-actions"><button className="lw-button" disabled={busy} onClick={() => { setError(''); setOptions(null); setRetry(value => value + 1) }}>Check again</button><button className="lw-button" disabled={busy} onClick={onClose}>Close</button><button className="lw-button lw-button-primary" disabled={busy || !options?.available || options.format !== format || !title.trim()} onClick={() => void download()}><Icon name="download" size={16} />{busy ? 'Preparing export…' : includeMetadata ? 'Save editor package…' : `Save ${format === 'premiere_xml' ? 'XML' : format.toUpperCase()}…`}</button></footer>
   </dialog>
 }

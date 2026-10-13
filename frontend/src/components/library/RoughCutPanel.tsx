@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { cancelRoughCut, generateRoughCut, getRoughCut, roughCutExportUrl, saveRoughCut } from '../../api/library'
+import { saveExport } from '../../api/exportSave'
 import type { AssetDetail, CutClipEdit, CutMoment, RoughCutDraft } from '../../api/library'
 import { duration, errorMessage } from './format'
 import { SearchHighlight } from './SearchHighlight'
@@ -129,14 +130,10 @@ export function RoughCutPanel({ asset, active, onRefresh, onConfigure, configure
   async function download(format: 'fcpxml' | 'json') {
     if (!draft || dirty) return
     setWorking(true); setError('')
-    let url: string | undefined
     try {
-      const response = await fetch(roughCutExportUrl(asset.job_id, draft.revision, format))
-      if (!response.ok) { const body = await response.json().catch(() => null); throw new Error(body?.detail || 'Export failed') }
-      url = URL.createObjectURL(await response.blob())
-      const link = document.createElement('a'); link.href = url; link.download = `rough_cut.${format}`; link.click()
+      await saveExport(`rough_cut.${format}`, roughCutExportUrl(asset.job_id, draft.revision, format))
     } catch (cause) { setError(errorMessage(cause)) }
-    finally { if (url) setTimeout(() => URL.revokeObjectURL(url!), 1000); setWorking(false) }
+    finally { setWorking(false) }
   }
   function add(moment: CutMoment) {
     stop()

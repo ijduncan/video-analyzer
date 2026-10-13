@@ -1,5 +1,5 @@
 declare global {
-  interface Window { pywebview?: { api?: { choose_files?: () => Promise<string[]>; choose_folders?: () => Promise<string[]> } } }
+  interface Window { pywebview?: { api?: { choose_files?: () => Promise<string[]>; choose_folders?: () => Promise<string[]>; choose_export_file?: (filename: string) => Promise<string | null> } } }
 }
 
 export function nativeMediaAvailable() {
