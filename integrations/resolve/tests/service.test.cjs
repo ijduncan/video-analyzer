@@ -16,8 +16,10 @@ function fixture(options = {}) {
     async selectClip(binding) { native.push(["select", binding]); return { selected: true }; }, async addMarkers(binding, technical, cues) { native.push(["markers", binding, cues]); return { added: cues.length, duplicates: 0, collisions: 0 }; },
     async exportShots(binding, pack, destination) { native.push(["shots", binding, pack, destination]); if (options.exportShots) return options.exportShots(binding, pack, destination); return { created: pack.shots.length, reused: 0, added: destination === "pool" ? 0 : pack.shots.length }; },
     async syncMetadata(binding, mapping) { native.push(['metadata', binding, mapping]); return { updated: 3, preserved: 1 }; },
+    async importPackage(projectId, pack) { native.push(['package', projectId, pack]); if(options.importFailure)throw new Error('Native import failed'); return {media:3,timeline:true,preserved:1}; },
   };
   const service = createService({ platform: options.platform || "win32", host,
+    chooseEditorPackage: options.chooseEditorPackage || (async()=>null),
     async readConnection() { discoveries.push(true); if (options.discoveryError) throw new Error(options.discoveryError); return connection; },
     preferences: { async read() { return content; }, async write(value) { content = value; writes.push(value); } }, clipboard: { writeText(value) { copies.push(value); } },
     async saveSubtitle(name, value) { exports.push([name, value]); return true; }, async openBrowser(value) { browser.push(value); },
@@ -210,4 +212,15 @@ test("selection registration validates the active instance before any source reg
 test("empty library rejects changed authenticated health even if descriptor has not changed", async () => {
   const options = { emptyLibrary: true }, m = fixture(options); await m.connect(); options.healthInstance = "579458c7-0aac-43de-8239-dd2a2de3da57";
   const state = await m.service.invoke("refresh"); assert.equal(state.connected, false); assert.equal(state.project, null); assert.equal(m.native.length, 0);
+});
+test('editor package import is a main-process file choice followed by one native action and cleanup',async()=>{
+ const f=fixture({chooseEditorPackage:async()=> 'trusted archive',onFetch:async(url,init)=>{
+  if(url.endsWith('/imports/prepare')){assert.deepEqual(JSON.parse(init.body),{archive:'trusted archive'});return {ok:true,status:200,text:async()=>JSON.stringify({import_id:'import-1',schema:'video-analyzer.resolve-handoff'})};}
+  if(url.endsWith('/imports/import-1'))return {ok:true,status:200,text:async()=>'{"status":"finished"}'};
+ }});await f.connect();const state=await f.service.invoke('importPackage');
+ assert.equal(f.native.filter(item=>item[0]==='package').length,1);assert.match(state.message,/applied automatically/);assert.equal(f.requests.filter(([url,init])=>url.endsWith('/imports/import-1')&&init.method==='DELETE').length,1);
+ await assert.rejects(f.service.invoke('importPackage',{archive:'renderer supplied'}),/Unsupported/);
+});
+test('cancelled package choice makes no native edits or package preparation requests',async()=>{
+ const f=fixture();await f.connect();await f.service.invoke('importPackage');assert.equal(f.native.length,0);assert.equal(f.requests.filter(([url])=>url.includes('/imports/')).length,0);
 });

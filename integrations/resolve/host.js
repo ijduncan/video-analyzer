@@ -671,7 +671,66 @@ function createHost(resolve) {
     }
     return { added: added.length, duplicates, collisions };
   }
-  return { getProjectIdentity: projectIdentity, getSelection, resolveBinding, selectClip, showTimelineClip, addMarkers, exportShots, syncMetadata };
+  async function importPackage(projectId, pack) {
+    const { project } = await active(projectId), media = await pool(project);
+    if (!pack || pack.schema !== "video-analyzer.resolve-handoff" || pack.version !== 1 || !["timeline", "bin"].includes(pack.layout) ||
+        !absolutePath(pack.timeline_path) || !Array.isArray(pack.assets) || !pack.assets.length || pack.assets.length > 500) fail("INVALID_PACKAGE", "Choose a current legacy XML editor package.");
+    const paths = new Set();
+    for (const asset of pack.assets) {
+      if (!asset || !absolutePath(asset.media_path) || paths.has(pathKey(asset.media_path)) || !number(asset.source_fps) || !number(asset.duration_seconds) ||
+          !asset.metadata || asset.metadata.schema_version !== "1.0" || !asset.metadata.record || asset.metadata.record.schema !== "video-analyzer.library" ||
+          JSON.stringify(asset.metadata).length > 3800000) fail("INVALID_PACKAGE", "Package source identity or metadata is invalid or too large. Export fewer media.");
+      paths.add(pathKey(asset.media_path));
+    }
+    let timeline = null, items;
+    if (pack.layout === "timeline") {
+      await active(projectId); method(media, "ImportTimelineFromFile");
+      timeline = await media.ImportTimelineFromFile(pack.timeline_path, { importSourceClips: true, timelineName: String(pack.title || "Video Analyzer selects").slice(0, 200) });
+      if (!timeline) fail("TIMELINE_IMPORT_FAILED", "Resolve did not confirm the timeline import. Inspect the Media Pool before retrying.");
+      method(timeline, "GetItemListInTrack");
+      const video = list(await timeline.GetItemListInTrack("video", 1), "imported timeline clips");
+      if (video.length !== pack.assets.length) fail("TIMELINE_VERIFY_FAILED", "The timeline was created, but Resolve did not confirm every original. Inspect it before retrying.");
+      items = [];
+      for (let index = 0; index < video.length; index++) {
+        method(video[index], "GetMediaPoolItem");
+        const item = await video[index].GetMediaPoolItem();
+        const descriptor = item && (await describe(item)).descriptor;
+        if (!descriptor || pathKey(descriptor.media_path) !== pathKey(pack.assets[index].media_path))
+          fail("TIMELINE_VERIFY_FAILED", "The timeline was created, but an original source is offline or differs from the package. Inspect it before retrying.");
+        items.push(item);
+      }
+    } else {
+      method(media, "ImportMedia");
+      items = list(await media.ImportMedia(pack.assets.map(asset => asset.media_path)), "imported originals");
+    }
+    const sources = new Map();
+    for (const item of items) {
+      const result = await describe(item);
+      if (result.descriptor) sources.set(pathKey(result.descriptor.media_path), result.descriptor);
+    }
+    // Validate all returned source identities before writing any metadata.
+    const bindings = pack.assets.map(asset => {
+      const source = sources.get(pathKey(asset.media_path));
+      if (!source || !source.source_fps || Math.abs(source.source_fps - asset.source_fps) > 0.001 ||
+          !source.source_frames || Math.abs(source.source_frames - Math.round(asset.duration_seconds * asset.source_fps)) > 1 || source.source_start !== 0)
+        fail("SOURCE_MISMATCH", "Resolve could not verify every full original at its exported frame rate and duration. Inspect the imported media before retrying; no metadata was written.");
+      return { ...source, host: "resolve", project_id: projectId };
+    });
+    let updated = 0, preserved = 0;
+    for (let index = 0; index < bindings.length; index++) {
+      await active(projectId);
+      const result = await syncMetadata(bindings[index], pack.assets[index].metadata);
+      updated += result.updated; preserved += result.preserved;
+    }
+    if (timeline) {
+      await active(projectId);
+      method(project, "SetCurrentTimeline");
+      if (await project.SetCurrentTimeline(timeline) !== true) fail("TIMELINE_SELECT_FAILED", "The timeline was imported with metadata, but could not be opened. Open it from the Media Pool.");
+    }
+    await active(projectId);
+    return { media: bindings.length, timeline: !!timeline, updated, preserved };
+  }
+  return { getProjectIdentity: projectIdentity, getSelection, resolveBinding, selectClip, showTimelineClip, addMarkers, exportShots, syncMetadata, importPackage };
 }
 function frameTimecode(frame, rate, drop) {
   let value = frame;

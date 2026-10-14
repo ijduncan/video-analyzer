@@ -20,6 +20,27 @@ from app.services.editor_metadata import map_fields, editor_metadata
 router = APIRouter(prefix='/api/editor/resolve', dependencies=[Depends(require_editor)])
 
 
+class EditorPackageRequest(BaseModel):
+    archive: str = Field(min_length=1, max_length=90 * 1024 * 1024)
+
+
+@router.post('/imports/prepare')
+async def prepare_editor_package(body: EditorPackageRequest):
+    import asyncio
+    from app.services.resolve_handoff import prepare_import
+    try:
+        return await asyncio.to_thread(prepare_import, body.archive)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+
+
+@router.delete('/imports/{identifier}')
+async def finish_editor_package(identifier: str):
+    from app.services.resolve_handoff import finish_import
+    finish_import(identifier)
+    return {'status': 'finished'}
+
+
 class ShotRange(BaseModel):
     shot_number: StrictInt = Field(gt=0)
     start: float = Field(ge=0, allow_inf_nan=False)

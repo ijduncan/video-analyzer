@@ -32,7 +32,7 @@ def test_selected_xml_links_original_video_and_all_audio(export_asset, rate, nom
     items = root.findall('.//clipitem')
     assert len(items) == 5 and len(root.findall('sequence/media/audio/track')) == 4
     full_file = root.find('.//file[name]')
-    assert full_file.findtext('pathurl') == 'file://localhost//server/Footage%20folder/A%20%26%20B.mxf'
+    assert full_file.findtext('pathurl') == 'file://server/Footage%20folder/A%20%26%20B.mxf'
     assert full_file.findtext('timecode/frame') == str(3600 * nominal)
     assert full_file.findtext('media/audio/channelcount') == '4'
     assert full_file.findtext('media/audio/samplecharacteristics/samplerate') == '48000'

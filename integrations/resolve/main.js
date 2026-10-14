@@ -56,6 +56,16 @@ async function start(electron, workflow) {
         if (result.canceled || !result.filePath) return false;
         await fs.writeFile(result.filePath, content, "utf8"); return true;
       },
+      async chooseEditorPackage() {
+        const result = await dialog.showOpenDialog(window, { title: "Import analyzed media and metadata", properties: ["openFile"], filters: [{ name: "Video Analyzer editor package", extensions: ["zip"] }] });
+        if (result.canceled || result.filePaths.length !== 1) return null;
+        const handle = await fs.open(result.filePaths[0], "r");
+        try {
+          const stat = await handle.stat();
+          if (!stat.isFile() || stat.size > 64 * 1024 * 1024) throw new Error("Choose an editor package smaller than 64 MB. Export fewer media.");
+          return (await handle.readFile()).toString("base64");
+        } finally { await handle.close(); }
+      },
       async openBrowser(url) { await shell.openExternal(url); },
     });
     const indexPath = path.join(__dirname, "index.html"), indexURL = pathToFileURL(indexPath).href;

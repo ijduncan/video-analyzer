@@ -395,6 +395,14 @@ def combined_csv(jobs):
     return output.getvalue()
 
 
+def export_source_signature(path):
+    try:
+        stat = Path(path).stat()
+        return {'size_bytes': stat.st_size, 'mtime_ns': stat.st_mtime_ns}
+    except OSError:
+        return None  # Offline exports can still be relinked in an editor.
+
+
 def build_download(jobs, title, layout, include_metadata, format='premiere_xml'):
     content, extension, _ = render_editor_export(jobs, title, format, layout)
     temporary = tempfile.NamedTemporaryFile(prefix='video-analyzer-export-', suffix='.zip' if include_metadata else '.' + extension, delete=False)
@@ -406,6 +414,20 @@ def build_download(jobs, title, layout, include_metadata, format='premiere_xml')
             return path
         with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as archive:
             archive.writestr('Video Analyzer.' + extension, content)
+            if format == 'premiere_xml':
+                from app.services.editor_metadata import editor_metadata
+                archive.writestr('Resolve handoff.json', json.dumps({
+                    'schema': 'video-analyzer.resolve-handoff', 'version': 1, 'title': title,
+                    'layout': layout, 'editor_file': 'Video Analyzer.xml',
+                    'assets': [{'media_path': str(job.local_path), 'source_fps': float(_fcpxml_timing(job_data(job))[0]),
+                                'duration_seconds': float(job.technical['duration_seconds']),
+                                'source_signature': export_source_signature(job.local_path),
+                                'metadata': editor_metadata(job, include_record=True)} for job in jobs],
+                }, ensure_ascii=False))
+            from app.services.resolve_metadata_csv import ambiguous_filenames, export_resolve_metadata
+            ambiguous = ambiguous_filenames(jobs)
+            archive.writestr('Resolve metadata.csv', export_resolve_metadata(
+                [job for job in jobs if source_filename(job.local_path).casefold() not in ambiguous]))
             archive.writestr('library.json', json.dumps({'schema': 'video-analyzer.collection', 'schema_version': '1.0',
                 'assets': [portable_document(job) for job in jobs]}, ensure_ascii=False, indent=2))
             archive.writestr('clips.csv', combined_csv(jobs))
@@ -414,6 +436,10 @@ def build_download(jobs, title, layout, include_metadata, format='premiere_xml')
                 stem = re.sub(r'[^\w .-]', '_', Path(source_filename(job.filename)).stem)[:100].strip(' .') or 'media'
                 folder = f'metadata/{index:04d}_{stem}'
                 record = {'id': job.job_id, 'filename': source_filename(job.filename), 'files': [], 'unavailable': {}}
+                resolve_csv = f'{folder}/Resolve metadata.csv'
+                archive.writestr(resolve_csv, export_resolve_metadata([job]))
+                record['files'].append(resolve_csv)
+                record['resolve_selected_import_required'] = source_filename(job.local_path).casefold() in ambiguous
                 for sidecar_format in ('xmp', 'srt'):
                     try:
                         result, _, sidecar_extension = export_library(job, sidecar_format)
@@ -425,8 +451,27 @@ def build_download(jobs, title, layout, include_metadata, format='premiere_xml')
                     record['files'].append(name)
                 records.append(record)
             archive.writestr('manifest.json', json.dumps({'media_count': len(jobs), 'media_included': False,
-                'format': format, 'layout': layout, 'editor_file': 'Video Analyzer.' + extension, 'items': records}, ensure_ascii=False, indent=2))
+                'format': format, 'layout': layout, 'editor_file': 'Video Analyzer.' + extension,
+                'resolve_metadata_file': 'Resolve metadata.csv', 'items': records}, ensure_ascii=False, indent=2))
             archive.writestr('Read me.txt', f'Extract this package and import Video Analyzer.{extension}. Legacy Final Cut Pro 7 XML (.xml): File > Import in Premiere or File > Import > Timeline in Resolve. Final Cut Pro X XML (.fcpxml): File > Import > Timeline in Resolve, or Import XML in Final Cut Pro. OTIO and EDL: File > Import > Timeline in Resolve. OTIO is an open interchange format, not a proprietary DRT/DRP project. EDL is video-only; relink by filenames/source timecodes and retain the metadata files.\n\nWhole originals are referenced, not copied. The optional timeline follows selection order. Relink sources if they have moved or are offline. Each format has its own timing and metadata limitations. FCPXML preserves recorded pixel aspect ratios; OTIO leaves image geometry to the original decoder. XML/OTIO contain analysis/dialogue markers, notes and metadata where supported; editor field visibility varies. library.json and XMP retain complete saved analysis, including fields an editor does not import automatically. Use the integration to sync supported native fields. SRTs retain source-relative times, not combined-timeline times. manifest.json lists absent/invalid subtitle exports. AI timestamps are approximate.\n')
+            archive.writestr('Resolve metadata instructions.txt',
+                'AUTOMATIC IMPORT (recommended): Export legacy Final Cut Pro 7 XML with the complete metadata package. '
+                'In Resolve, open Workspace > Workflow Integrations > Video Analyzer and click Import analyzed media package. '
+                'Choose this ZIP. The integration imports originals, verifies their identity and timing, applies descriptions, dialogue, slate fields and complete analysis, '
+                'then creates the timeline. Existing manual metadata edits are preserved. No separate CSV import is needed. '
+                'Resolve Studio and the local Video Analyzer companion must be running.\n\n'
+                'MANUAL FALLBACK (without the integration):\n'
+                'Resolve 21: legacy XML imports the timeline and originals, but does not populate analyzer logging fields or markers.\n\n'
+                'After importing the timeline, choose File > Import Metadata To > Media Pool and open the top-level Resolve metadata.csv. '
+                'Enable Match using filename. Disable Ignore file extensions, Match using clip start and end Timecode, Match using Reel Name, and New name using source file path. '
+                'Choose Only update metadata items with entries in the source file. This updates populated analyzer fields and leaves other fields intact; it can replace your existing values in those populated fields. '
+                'Use the integration Sync metadata instead if you want to preserve manual edits.\n\n'
+                'Open Metadata > All Groups. Description, Keywords, Scene, Take, Production Name, Director, DOP, Roll Card # and Dialog Notes use native fields. '
+                'Comments includes every clip description, labeled analysis values and the complete saved JSON record. Dialogue remains source-relative logging text, not native transcription or timeline captions. Import the separate SRT files if captions are needed.\n\n'
+                'Resolve matches CSV by filename, not Clip Directory. The top-level CSV excludes names shared by multiple selected originals. '
+                'For those files, select exactly one original in the Media Pool, confirm its directory, then choose File > Import Metadata To > Selected Media Pool Clips and import its CSV from the numbered metadata folder. '
+                'The manifest identifies these items. If your existing Media Pool contains other files with the same names, use selected-clip import for each source or the integration instead of the bulk CSV. '
+                'Clip Directory is included for identification; it is not an automatic match key.\n')
         return path
     except BaseException:
         path.unlink(missing_ok=True)

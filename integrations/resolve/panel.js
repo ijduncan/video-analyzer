@@ -26,7 +26,7 @@
     el("workspace").hidden = !state.connected;
     el("retry").hidden = state.connected; el("retry").disabled = busy;
     el("connection-status").textContent = state.connected ? "Connected" : "Waiting for app";
-    for (const id of ["load-selection", "load-timeline", "reload-saved", "asset-toggle", "mode", "shots-tab", "transcript-tab", "search"]) el(id).disabled = busy;
+    for (const id of ["load-selection", "load-timeline", "reload-saved", "asset-toggle", "mode", "shots-tab", "transcript-tab", "search", "import-package"]) el(id).disabled = busy;
     el("load-timeline").disabled = busy || state.project && state.project.timeline === null;
     const analyzing = state.asset && helpers.ACTIVE_STATUSES.includes(state.asset.status);
     el("analyze").disabled = busy || !state.asset || analyzing; el("mode").disabled = busy || analyzing;
@@ -137,6 +137,7 @@
   }
   function on(id, event, callback) { el(id).addEventListener(event, callback); }
   on("retry", "click", () => action("connect"));
+  on("import-package", "click", () => action("importPackage"));
   on("load-selection", "click", () => action("loadSelection", { source: "pool" }));
   on("load-timeline", "click", () => action("loadSelection", { source: "timeline" }));
   on("reload-saved", "click", () => action("reloadSaved"));

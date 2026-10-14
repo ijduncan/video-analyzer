@@ -10,9 +10,11 @@ from app.services.nle_export import _fcpxml_timing, _frames, _frame_timecode, _n
 
 
 def source_url(path):
-    """FCP7 file://localhost URLs, including Windows network and drive paths."""
+    """FCP7 file URLs; UNC servers are authorities for Resolve interoperability."""
     path = str(path or '').replace('\\', '/')
-    if path.startswith('//') or path.startswith('/'):
+    if path.startswith('//'):
+        return quote('file:' + path, safe='/:')
+    if path.startswith('/'):
         return quote('file://localhost' + path, safe='/:')
     if re.match(r'^[A-Za-z]:/', path):
         return quote('file://localhost/' + path, safe='/:')

@@ -1,5 +1,7 @@
 Video Analyzer for DaVinci Resolve Studio - development preview
 
+Automatic library export import: in the integration, click Import analyzed media package and choose a legacy XML ZIP exported with its complete metadata package. The integration imports originals, applies descriptions, dialogue and all analysis, and creates the timeline together. No separate metadata CSV import is needed. Resolve Studio and the local companion must be running, with original media online.
+
 Requires Resolve Studio 20.1 or newer. The free edition does not support native Workflow Integration windows. This plugin uses Resolve's own Electron runtime and native WorkflowIntegration.node module; it needs no separately installed Node or Python runtime. The module is copied from your installed Blackmagic SDK during installation and is not included in this download.
 
 Windows x64 first:

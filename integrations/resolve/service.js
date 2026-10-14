@@ -2,7 +2,7 @@
 const helpers = require("./controller");
 const DEFAULT_SERVER = "http://127.0.0.1:8000";
 const MAC_SERVER = "https://localhost:8443";
-const ACTIONS = Object.freeze(["bootstrap", "connect", "disconnect", "refresh", "reloadSaved", "loadSelection", "selectAsset", "setView", "analyze", "selectClip", "showTimelineClip", "copyTimes", "addMarkers", "exportShots", "syncMetadata", "exportSubtitles", "openAnalyzer"]);
+const ACTIONS = Object.freeze(["bootstrap", "connect", "disconnect", "refresh", "reloadSaved", "loadSelection", "selectAsset", "setView", "analyze", "selectClip", "showTimelineClip", "copyTimes", "addMarkers", "exportShots", "syncMetadata", "exportSubtitles", "openAnalyzer", "importPackage"]);
 const PAYLOAD_FIELDS = Object.freeze({ loadSelection: ["source"], selectAsset: ["id"], setView: ["tab", "mode", "query"], analyze: ["revision"], selectClip: ["revision", "index"], showTimelineClip: ["revision", "index"], copyTimes: ["revision", "index"], addMarkers: ["revision", "count"], exportShots: ["revision", "indices", "destination"], syncMetadata: ["revision"], exportSubtitles: ["revision"] });
 const OFFLINE = "Start Video Analyzer. This panel connects automatically.";
 function normalizeServer(value) {
@@ -218,6 +218,24 @@ function createService(dependencies) {
     return results[payload.index];
   }
   const actions = {
+    async importPackage() {
+      await validateConnection(); await verifyProject();
+      const projectId = state.project.id;
+      const archive = await dependencies.chooseEditorPackage();
+      if (!archive) { state.message = "Import cancelled."; return view(); }
+      await host.getProjectIdentity(projectId); await validateConnection();
+      const pack = await request("/imports/prepare", { method: "POST", body: JSON.stringify({ archive }) });
+      try {
+        await host.getProjectIdentity(projectId); await validateConnection();
+        const result = await host.importPackage(projectId, pack);
+        await verifyProject(projectId);
+        state.message = result.media + " originals imported" + (result.timeline ? " into a new timeline" : " into the Media Pool") + "; descriptions, dialogue and complete analysis applied automatically." +
+          (result.preserved ? " Existing editor metadata was preserved." : "");
+        return view();
+      } finally {
+        if (pack.import_id) { try { await request("/imports/" + encodeURIComponent(pack.import_id), { method: "DELETE" }); } catch (_) { /* Temporary XML expires; never retry native import. */ } }
+      }
+    },
     async bootstrap() { try { saved = sanitizePreferences(JSON.parse(await preferences.read()), defaultServer); } catch (_) { saved = sanitizePreferences(null, defaultServer); } return connect(); },
     connect,
     async disconnect() { offline(); return view(); },
@@ -289,7 +307,7 @@ function createService(dependencies) {
     if (payload && Object.keys(payload).some(key => !allowed.includes(key))) throw new Error("Unsupported plugin action field.");
     if (PAYLOAD_FIELDS[action] && action !== "loadSelection" && payload === undefined) throw new Error("This plugin action requires its current context.");
     if (nativeBusy && !["refresh", "bootstrap"].includes(action)) throw new Error("Wait for the current native action to finish.");
-    const locked = ["connect", "disconnect", "reloadSaved", "loadSelection", "selectAsset", "analyze", "selectClip", "showTimelineClip", "copyTimes", "addMarkers", "exportShots", "syncMetadata", "exportSubtitles"].includes(action);
+    const locked = ["connect", "disconnect", "reloadSaved", "loadSelection", "selectAsset", "analyze", "selectClip", "showTimelineClip", "copyTimes", "addMarkers", "exportShots", "syncMetadata", "exportSubtitles", "importPackage"].includes(action);
     if (locked) nativeBusy = true;
     try { return await actions[action](payload); } finally { if (locked) nativeBusy = false; }
   }
