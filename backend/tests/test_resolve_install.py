@@ -74,14 +74,13 @@ def run_install(fixture, extra=(), env=None, prefix=""):
     args = ["-PluginPath", str(source), "-DeveloperPath", str(developer), "-Destination", str(destination), "-NoUI", *extra]
     executable = shutil.which("powershell") or shutil.which("pwsh")
     assert executable
-    if prefix:
-        def quote(value):
-            return "'" + str(value).replace("'", "''") + "'"
-        script = prefix + "\n& " + quote(INSTALLER) + " " + " ".join(value if value.startswith("-") else quote(value) for value in args)
-        encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-        command = [executable, "-NoProfile", "-EncodedCommand", encoded]
-    else:
-        command = [executable, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(INSTALLER), *args]
+    def quote(value):
+        return "'" + str(value).replace("'", "''") + "'"
+    # Fixtures never install into Resolve. Ignore real editor processes; the
+    # running-editor test overrides this stub with its own simulated process.
+    script = "function Get-Process { return @() }\n" + prefix + "\n& " + quote(INSTALLER) + " " + " ".join(value if value.startswith("-") else quote(value) for value in args)
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    command = [executable, "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded]
     result = subprocess.run(command, capture_output=True, text=True, timeout=30, env=env)
     result.stderr = powershell_error_text(result.stderr)
     return result

@@ -1,3 +1,5 @@
 -r requirements.txt
 pytest>=8.0
 httpx>=0.28
+# Native file-dialog bridge tests use the same runtime as the desktop bundle.
+pywebview==6.2.1

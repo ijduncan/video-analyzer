@@ -50,7 +50,8 @@ def test_projects_enumerate_import_ids_independently_of_shared_project_metadata(
     assert data['total'] == 2
     imports = {item['id']: item for item in data['projects']}
     assert imports['test-asset'] == {'id': 'test-asset', 'title': 'Harbor film',
-        'filename': 'Harbor commercial.mov', 'status': 'analyzing', 'shot_count': 3}
+        'filename': 'Harbor commercial.mov', 'status': 'analyzing', 'shot_count': 3,
+        'folder_id': None, 'has_local_media': False}
     assert imports['other-import']['title'] == 'Another'
     assert imports['other-import']['shot_count'] == 0
     assert 'private-provider' not in response.text
